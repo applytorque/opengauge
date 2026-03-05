@@ -1,45 +1,48 @@
 # OpenGauge
 
-A local-first, token-efficient LLM chat interface that runs on your machine and helps reduce context bloat while preserving useful history.
+A local-first, token-efficient LLM chat interface.
 
-## What this repo does
-
-OpenGauge provides:
-- A local web chat UI on `http://localhost:3000`
-- Token optimization (compression + deduplication + checkpointing)
-- Context retrieval from past messages (RAG-style memory)
-- Provider support for Anthropic, OpenAI, Gemini, and Ollama
-- Local storage via SQLite in `~/.opengauge/opengauge.db`
-
-## Quick start
-
-### Run directly
+If you just want to use it, you only need one command:
 
 ```bash
 npx opengauge
 ```
 
-### Run from source
+## What this repo does
+
+OpenGauge runs a local web chat app with:
+- Token optimization (compression + deduplication + checkpoints)
+- Context retrieval from conversation history (RAG-style)
+- Multiple providers: Anthropic, OpenAI, Gemini, Ollama
+- Local storage in SQLite at `~/.opengauge/opengauge.db`
+
+## Use via npx (recommended)
 
 ```bash
-git clone https://github.com/applytorque/opengauge.git
-cd opengauge
-npm install
-npm run build
-npm start
+npx opengauge
 ```
 
-Then open:
+This starts a local server and opens the app in your browser.
+
+Default URL:
 
 ```txt
 http://localhost:3000
 ```
 
-## Provider setup
+If port 3000 is busy:
 
-On first launch, use the in-app setup wizard or create this file:
+```bash
+npx opengauge --port 3001
+```
+
+## First-time setup
+
+When the app opens, configure your provider in the UI wizard, or create:
 
 `~/.opengauge/config.yml`
+
+Example:
 
 ```yaml
 providers:
@@ -51,12 +54,22 @@ defaults:
   provider: anthropic
 ```
 
-## Useful scripts
+## Developer setup (from source)
 
 ```bash
-npm run build        # compile TypeScript + copy UI assets
-npm start            # start OpenGauge
-npm pack --dry-run   # preview npm package contents
+git clone https://github.com/applytorque/opengauge.git
+cd opengauge
+npm install
+npm run build
+npm start
+```
+
+## Useful commands
+
+```bash
+npm run build        # Compile TypeScript + copy UI assets
+npm start            # Run CLI entry locally
+npm pack --dry-run   # Preview npm package contents
 ```
 
 ## License
