@@ -240,12 +240,13 @@ export function registerRoutes(app: FastifyInstance): void {
 
     const previousMessages = queries.getMessages(conversationId);
     const previousUserMessages = previousMessages.filter((msg) => msg.role === 'user');
+    const recentUserMessages = previousUserMessages.slice(-100);
     const previousPromptAnalytics = queries.listPromptAnalytics(500, conversationId);
     const analyticsByMessageId = new Map(
       previousPromptAnalytics.map((item) => [item.message_id, item])
     );
 
-    const previousPromptInputs = previousUserMessages.map((msg) => {
+    const previousPromptInputs = recentUserMessages.map((msg) => {
       const analytics = analyticsByMessageId.get(msg.id);
       return {
         content: msg.content,
@@ -749,12 +750,13 @@ export function registerRoutes(app: FastifyInstance): void {
     try {
       if (conversationId) {
         const previousMessages = queries.getMessages(conversationId).filter((msg) => msg.role === 'user');
+        const recentMessages = previousMessages.slice(-100);
         const previousPromptAnalytics = queries.listPromptAnalytics(500, conversationId);
         const analyticsByMessageId = new Map(
           previousPromptAnalytics.map((item) => [item.message_id, item])
         );
 
-        for (const msg of previousMessages) {
+        for (const msg of recentMessages) {
           const analytics = analyticsByMessageId.get(msg.id);
           previousPromptInputs.push({
             content: msg.content,
