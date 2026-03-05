@@ -18,9 +18,16 @@ export class AnthropicProvider implements LLMProvider {
     this.defaultModel = config.default_model || 'claude-sonnet-4-20250514';
   }
 
+  private mergeSystemMessages(messages: ChatRequest['messages']): string {
+    return messages
+      .filter((m) => m.role === 'system' && m.content?.trim())
+      .map((m) => m.content.trim())
+      .join('\n\n');
+  }
+
   async chat(request: ChatRequest): Promise<ChatResponse> {
     const model = request.model || this.defaultModel;
-    const systemMessage = request.messages.find((m) => m.role === 'system');
+    const systemContent = this.mergeSystemMessages(request.messages);
     const nonSystemMessages = request.messages.filter((m) => m.role !== 'system');
 
     const body: any = {
@@ -32,12 +39,12 @@ export class AnthropicProvider implements LLMProvider {
       })),
     };
 
-    if (systemMessage) {
+    if (systemContent) {
       // Use prompt caching for system prompts
       body.system = [
         {
           type: 'text',
-          text: systemMessage.content,
+          text: systemContent,
           cache_control: { type: 'ephemeral' },
         },
       ];
@@ -80,7 +87,7 @@ export class AnthropicProvider implements LLMProvider {
 
   async *chatStream(request: ChatRequest): AsyncGenerator<StreamChunk, void, unknown> {
     const model = request.model || this.defaultModel;
-    const systemMessage = request.messages.find((m) => m.role === 'system');
+    const systemContent = this.mergeSystemMessages(request.messages);
     const nonSystemMessages = request.messages.filter((m) => m.role !== 'system');
 
     const body: any = {
@@ -93,11 +100,11 @@ export class AnthropicProvider implements LLMProvider {
       })),
     };
 
-    if (systemMessage) {
+    if (systemContent) {
       body.system = [
         {
           type: 'text',
-          text: systemMessage.content,
+          text: systemContent,
           cache_control: { type: 'ephemeral' },
         },
       ];

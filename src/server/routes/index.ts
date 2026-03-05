@@ -38,6 +38,26 @@ export function registerRoutes(app: FastifyInstance): void {
     return Math.ceil(text.split(/\s+/).length * 1.3);
   }
 
+  function isProviderUsable(config: AppConfig, providerName: ProviderName): boolean {
+    if (providerName === 'ollama') return true;
+    const providerConfig = config.providers?.[providerName];
+    return Boolean(providerConfig?.api_key);
+  }
+
+  function findFallbackProvider(config: AppConfig, primary: ProviderName): ProviderName | null {
+    const preference: ProviderName[] = ['anthropic', 'openai', 'ollama', 'gemini'];
+    for (const candidate of preference) {
+      if (candidate === primary) continue;
+      if (isProviderUsable(config, candidate)) return candidate;
+    }
+    return null;
+  }
+
+  function isGeminiQuotaError(err: unknown): boolean {
+    const msg = String((err as any)?.message || err || '').toLowerCase();
+    return msg.includes('gemini') && (msg.includes('quota') || msg.includes('resource_exhausted') || msg.includes('(429)'));
+  }
+
   // ========== CHAT ==========
 
   app.post('/api/chat', async (request: FastifyRequest, reply: FastifyReply) => {
@@ -116,6 +136,9 @@ export function registerRoutes(app: FastifyInstance): void {
     }
 
     const model = body.model || provider.defaultModel;
+    let activeProviderName: ProviderName = providerName;
+    let activeProvider: LLMProvider = provider;
+    let activeModel: string = model;
 
     // Get or create conversation
     let conversationId = body.conversation_id;
@@ -245,10 +268,10 @@ export function registerRoutes(app: FastifyInstance): void {
     let tokensIn = 0;
     let tokensOut = 0;
 
-    try {
-      const stream = provider.chatStream({
+    const streamFromProvider = async (llmProvider: LLMProvider, llmModel: string) => {
+      const stream = llmProvider.chatStream({
         messages: contextResult.messages,
-        model,
+        model: llmModel,
         stream: true,
       });
 
@@ -263,12 +286,54 @@ export function registerRoutes(app: FastifyInstance): void {
           tokensOut = chunk.tokensOut || 0;
         }
       }
+    };
+
+    try {
+      await streamFromProvider(activeProvider, activeModel);
 
       fullResponse = sanitizeAssistantText(fullResponse);
     } catch (err: any) {
-      sendSSE(reply, 'error', { message: err.message });
-      endSSE(reply);
-      return;
+      const canFallback =
+        activeProviderName === 'gemini' &&
+        !fullResponse &&
+        isGeminiQuotaError(err);
+
+      if (canFallback) {
+        const fallbackName = findFallbackProvider(config, activeProviderName);
+        if (fallbackName) {
+          try {
+            const fallbackConfig = config.providers[fallbackName] || {};
+            const fallbackProvider = createProvider(fallbackName, fallbackConfig);
+            const fallbackModel = fallbackProvider.defaultModel;
+
+            activeProviderName = fallbackName;
+            activeProvider = fallbackProvider;
+            activeModel = fallbackModel;
+
+            sendSSE(reply, 'meta', {
+              conversation_id: conversationId,
+              provider: activeProviderName,
+              model: activeModel,
+              fallback_from: providerName,
+            });
+
+            await streamFromProvider(activeProvider, activeModel);
+            fullResponse = sanitizeAssistantText(fullResponse);
+          } catch (fallbackErr: any) {
+            sendSSE(reply, 'error', { message: fallbackErr.message || String(fallbackErr) });
+            endSSE(reply);
+            return;
+          }
+        } else {
+          sendSSE(reply, 'error', { message: err.message });
+          endSSE(reply);
+          return;
+        }
+      } else {
+        sendSSE(reply, 'error', { message: err.message });
+        endSSE(reply);
+        return;
+      }
     }
 
     // Store assistant message
@@ -291,8 +356,8 @@ export function registerRoutes(app: FastifyInstance): void {
     const tokensSaved = Math.max(0, contextResult.tokensRaw - contextResult.tokensSent);
     queries.insertTokenUsage(
       conversationId,
-      providerName,
-      model,
+      activeProviderName,
+      activeModel,
       tokensIn,
       tokensOut,
       tokensSaved
@@ -302,7 +367,7 @@ export function registerRoutes(app: FastifyInstance): void {
     const conv = queries.getConversation(conversationId);
     if (conv && !conv.title) {
       try {
-        const titleResponse = await provider.chat({
+        const titleResponse = await activeProvider.chat({
           messages: [
             {
               role: 'system',
@@ -310,7 +375,7 @@ export function registerRoutes(app: FastifyInstance): void {
             },
             { role: 'user', content: displayMessage },
           ],
-          model,
+          model: activeModel,
           maxTokens: 20,
           temperature: 0.7,
         });
@@ -336,7 +401,7 @@ export function registerRoutes(app: FastifyInstance): void {
         .map((m) => ({ role: m.role as 'user' | 'assistant' | 'system', content: m.content }));
 
       if (chatMessages.length > 0) {
-        generateCheckpointSummary(chatMessages, provider, model)
+        generateCheckpointSummary(chatMessages, activeProvider, activeModel)
           .then((summary) => {
             const lastMsg = messages[messages.length - checkpointConfig.keepRecent - 1];
             queries.insertCheckpoint(

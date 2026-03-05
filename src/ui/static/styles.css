@@ -77,8 +77,10 @@ body {
   gap: 8px;
 }
 
-.sidebar-header h1 span {
-  font-size: 20px;
+.sidebar-header .brand-logo {
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
 }
 
 .new-chat-btn {
@@ -298,9 +300,10 @@ body {
 }
 
 .empty-state .logo {
-  font-size: 48px;
-  color: var(--accent);
-  opacity: 0.5;
+  width: 72px;
+  height: 72px;
+  object-fit: contain;
+  opacity: 0.75;
 }
 
 .empty-state h2 {

@@ -208,7 +208,10 @@ function Sidebar({ conversations, activeId, onSelect, onNew, onDelete, onSetting
   return html`
     <div class="sidebar">
       <div class="sidebar-header">
-        <h1><span>⚡</span> OpenGauge</h1>
+        <h1>
+          <img class="brand-logo" src="/assets/opengauge-logo.png" alt="OpenGauge" />
+          <span>OpenGauge</span>
+        </h1>
         <button class="new-chat-btn" onClick=${onNew}>+ New</button>
       </div>
 
@@ -280,7 +283,7 @@ function ChatMessage({ msg }) {
 function EmptyState() {
   return html`
     <div class="empty-state">
-      <div class="logo">⚡</div>
+      <img class="logo" src="/assets/opengauge-logo.png" alt="OpenGauge logo" />
       <h2>OpenGauge</h2>
       <p>A token-efficient LLM chat interface. Every token counts: compress before sending, retrieve instead of stuffing.</p>
     </div>
@@ -301,6 +304,15 @@ function App() {
   const [model, setModel] = useState('');
   const [tokenStats, setTokenStats] = useState({ raw: 0, sent: 0, saved: 0 });
   const [selectedFiles, setSelectedFiles] = useState([]);
+  const [configuredProviders, setConfiguredProviders] = useState({});
+  const [uiError, setUiError] = useState('');
+
+  const providerDefaults = {
+    anthropic: 'claude-sonnet-4-20250514',
+    openai: 'gpt-4o',
+    gemini: 'gemini-2.0-flash',
+    ollama: 'llama3',
+  };
 
   const chatEndRef = useRef(null);
   const textareaRef = useRef(null);
@@ -329,6 +341,8 @@ function App() {
   const checkConfig = async () => {
     try {
       const config = await api.getConfig();
+      const providers = config.providers || {};
+      setConfiguredProviders(providers);
       if (!config.providers || Object.keys(config.providers).length === 0) {
         setShowWizard(true);
       } else {
@@ -340,6 +354,17 @@ function App() {
       setShowWizard(true);
     }
   };
+
+  const isProviderReady = useCallback((providerName) => {
+    if (providerName === 'ollama') return true;
+    const cfg = configuredProviders?.[providerName];
+    return Boolean(cfg?.api_key);
+  }, [configuredProviders]);
+
+  const getProviderDefaultModel = useCallback((providerName) => {
+    const configured = configuredProviders?.[providerName]?.default_model;
+    return configured || providerDefaults[providerName] || '';
+  }, [configuredProviders]);
 
   const selectConversation = async (id) => {
     setActiveConvId(id);
@@ -370,8 +395,14 @@ function App() {
   const sendMessage = useCallback(async () => {
     if ((!input.trim() && selectedFiles.length === 0) || isStreaming) return;
 
+    if (!isProviderReady(provider)) {
+      setUiError(`${provider} is not configured. Add API key in Settings, then try again.`);
+      return;
+    }
+
     const userMessage = input.trim();
     const files = selectedFiles;
+    setUiError('');
     setInput('');
     setSelectedFiles([]);
     if (fileInputRef.current) fileInputRef.current.value = '';
@@ -391,6 +422,17 @@ function App() {
 
     try {
       const response = await api.sendMessageWithFiles(userMessage, activeConvId, provider, model, files);
+
+      if (!response.ok) {
+        let message = `Request failed (${response.status})`;
+        try {
+          const errorBody = await response.json();
+          if (errorBody?.error) message = errorBody.error;
+        } catch {
+          // Ignore parse errors for non-JSON error responses
+        }
+        throw new Error(message);
+      }
 
       let fullContent = '';
       for await (const { event, data } of parseSSE(response)) {
@@ -441,7 +483,7 @@ function App() {
     }
 
     setIsStreaming(false);
-  }, [input, selectedFiles, isStreaming, activeConvId, provider, model]);
+  }, [input, selectedFiles, isStreaming, activeConvId, provider, model, isProviderReady]);
 
   const onPickFiles = (e) => {
     const picked = Array.from(e.target.files || []);
@@ -495,7 +537,15 @@ function App() {
       <div class="main">
         <div class="header">
           <div class="model-selector">
-            <select value=${provider} onChange=${(e) => setProvider(e.target.value)}>
+            <select
+              value=${provider}
+              onChange=${(e) => {
+                const nextProvider = e.target.value;
+                setProvider(nextProvider);
+                setModel(getProviderDefaultModel(nextProvider));
+                setUiError('');
+              }}
+            >
               <option value="ollama">Ollama</option>
               <option value="openai">OpenAI</option>
               <option value="anthropic">Anthropic</option>
@@ -528,6 +578,12 @@ function App() {
         </div>
 
         <div class="input-area">
+          ${uiError ? html`
+            <div style="max-width: 800px; margin: 0 auto 10px auto; color: var(--danger); font-size: 13px;">
+              ${uiError}
+            </div>
+          ` : null}
+
           ${selectedFiles.length > 0 ? html`
             <div style="max-width: 800px; margin: 0 auto 10px auto; display: flex; flex-wrap: wrap; gap: 6px;">
               ${selectedFiles.map((file, index) => html`

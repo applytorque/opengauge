@@ -240,10 +240,16 @@ export async function assembleContext(
   tokensUsed += recentTokensUsed;
 
   // 10. Add the current user message if not already included from history
-  if (!hasCurrentUserInHistory) {
+  const currentUserAlreadyAssembled = assembled.some(
+    (msg) => msg.role === 'user' && msg.content.trim() === userMessage.trim()
+  );
+
+  if (!currentUserAlreadyAssembled) {
     assembled.push({ role: 'user', content: userMessage });
     tokensUsed += estimateTokens(userMessage);
-    tokensRaw += estimateTokens(userMessage);
+    if (!hasCurrentUserInHistory) {
+      tokensRaw += estimateTokens(userMessage);
+    }
   }
 
   return {

@@ -101,7 +101,7 @@ async function processSingleAttachment(file: UploadedAttachment): Promise<Proces
   } else if (kind === 'image') {
     text = await extractImageTextWithOptionalOCR(file.buffer);
     if (!text) {
-      text = `Image attached (${safeName}). OCR is not available in this runtime, so only metadata is stored.`;
+      text = `Image attached (${safeName}). OCR could not extract readable text from this image.`;
     }
   } else {
     const headerHex = file.buffer.subarray(0, 64).toString('hex');

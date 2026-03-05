@@ -18,8 +18,34 @@ export class GeminiProvider implements LLMProvider {
     this.defaultModel = config.default_model || 'gemini-2.0-flash';
   }
 
+  private formatApiError(status: number, raw: string, model?: string): string {
+    let payload: any = null;
+    try {
+      payload = JSON.parse(raw);
+    } catch {
+      // Keep payload null for plain-text responses
+    }
+
+    const apiMessage = payload?.error?.message || raw || 'Unknown Gemini API error';
+    const retryDelay = payload?.error?.details?.find((d: any) => d?.['@type']?.includes('RetryInfo'))?.retryDelay;
+
+    if (status === 429) {
+      const retryText = retryDelay ? ` Retry after ${retryDelay.replace('s', ' seconds')}.` : '';
+      return `Gemini quota exceeded. Check Gemini API billing/quota, wait, or switch to another provider.${retryText}`;
+    }
+
+    if (status === 404 && /models\//i.test(apiMessage)) {
+      return `Gemini model not found or unsupported: "${model || this.defaultModel}". Select a valid Gemini model (for example: gemini-2.0-flash).`;
+    }
+
+    return `Gemini API error (${status}): ${apiMessage}`;
+  }
+
   private toGeminiMessages(messages: ChatRequest['messages']): { systemInstruction?: any; contents: any[] } {
-    const systemMsg = messages.find((m) => m.role === 'system');
+    const systemContent = messages
+      .filter((m) => m.role === 'system' && m.content?.trim())
+      .map((m) => m.content.trim())
+      .join('\n\n');
     const nonSystem = messages.filter((m) => m.role !== 'system');
 
     const contents = nonSystem.map((m) => ({
@@ -28,8 +54,8 @@ export class GeminiProvider implements LLMProvider {
     }));
 
     return {
-      systemInstruction: systemMsg
-        ? { parts: [{ text: systemMsg.content }] }
+      systemInstruction: systemContent
+        ? { parts: [{ text: systemContent }] }
         : undefined,
       contents,
     };
@@ -63,7 +89,7 @@ export class GeminiProvider implements LLMProvider {
 
     if (!response.ok) {
       const err = await response.text();
-      throw new Error(`Gemini API error (${response.status}): ${err}`);
+      throw new Error(this.formatApiError(response.status, err, model));
     }
 
     const data = await response.json() as any;
@@ -107,7 +133,7 @@ export class GeminiProvider implements LLMProvider {
 
     if (!response.ok) {
       const err = await response.text();
-      throw new Error(`Gemini API error (${response.status}): ${err}`);
+      throw new Error(this.formatApiError(response.status, err, model));
     }
 
     const reader = response.body?.getReader();
