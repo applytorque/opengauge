@@ -73,6 +73,7 @@ export function compressPrompt(
   text: string,
   aggressiveness: number = 0.3
 ): CompressionResult {
+  const safeAggressiveness = Math.max(0, Math.min(0.85, aggressiveness));
   const tokensRaw = estimateTokens(text);
   let result = text;
 
@@ -81,7 +82,7 @@ export function compressPrompt(
     result = result.replace(pattern, replacement);
   }
 
-  if (aggressiveness > 0.4) {
+  if (safeAggressiveness > 0.4) {
     // Strip markdown formatting from older context while preserving meaning
     result = result
       .replace(/^#{1,6}\s+/gm, '')
@@ -92,7 +93,7 @@ export function compressPrompt(
   }
 
   // Apply word-level compression proportional to aggressiveness
-  if (aggressiveness > 0.2) {
+  if (safeAggressiveness > 0.2) {
     // Remove filler words
     const fillerPatterns = LOW_IMPORTANCE_PATTERNS.slice(3); // very, really, just, etc.
     for (const pattern of fillerPatterns) {
@@ -100,20 +101,9 @@ export function compressPrompt(
     }
   }
 
-  if (aggressiveness > 0.5) {
+  if (safeAggressiveness > 0.5) {
     // Remove articles (more aggressive)
     result = result.replace(/\b(the|a|an)\s+/gi, '');
-
-    // Remove additional low-information discourse words
-    result = result.replace(
-      /\b(i|you|we|they|it|this|that|these|those|here|there|today|now|then|also|well|okay|great|sure)\b/gi,
-      ''
-    );
-  }
-
-  if (aggressiveness > 0.7) {
-    // Remove copulas where surrounding context is clear
-    result = result.replace(/\b(is|are|was|were)\s+/gi, ' ');
   }
 
   // Clean up extra whitespace

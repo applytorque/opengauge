@@ -5,11 +5,14 @@
 import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
 import fastifyCors from '@fastify/cors';
+import fastifyMultipart from '@fastify/multipart';
 import path from 'path';
 import { registerRoutes } from './routes';
 import { getDb, closeDb } from '../db';
 
 export async function createServer(port: number = 3000) {
+  const host = process.env.OPENGAUGE_HOST || '127.0.0.1';
+
   const app = Fastify({
     logger: {
       level: 'info',
@@ -19,6 +22,13 @@ export async function createServer(port: number = 3000) {
   // CORS for local development
   await app.register(fastifyCors, {
     origin: true,
+  });
+
+  await app.register(fastifyMultipart, {
+    limits: {
+      files: 8,
+      fileSize: 8 * 1024 * 1024,
+    },
   });
 
   // Serve static UI files
@@ -52,7 +62,13 @@ export async function createServer(port: number = 3000) {
 
   // Start server
   try {
-    await app.listen({ port, host: '0.0.0.0' });
+    await app.listen({ port, host });
+    if (host !== '127.0.0.1' && host !== 'localhost') {
+      console.warn(
+        `\n[Security] OpenGauge is bound to ${host}. Anyone who can reach this host:port can use configured provider keys.`
+      );
+      console.warn('[Security] Use OPENGAUGE_HOST=127.0.0.1 to keep it local-only.\n');
+    }
     console.log(`\n  OpenGauge is running at http://localhost:${port}\n`);
     return app;
   } catch (err) {

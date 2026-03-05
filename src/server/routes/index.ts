@@ -7,7 +7,9 @@ import { getDb } from '../../db';
 import { Queries } from '../../db/queries';
 import { createProvider, ProviderName, ChatMessage, LLMProvider } from '../../core/providers/adapter';
 import { assembleContext, DEFAULT_ASSEMBLER_CONFIG, AssemblerConfig } from '../../core/rag/assembler';
-import { embed } from '../../core/rag/embedder';
+import { embed, getEmbeddingMode } from '../../core/rag/embedder';
+import { processAttachments, UploadedAttachment } from '../../core/attachments/processor';
+import { retrieveRelevantFileChunks, buildFileContextBlock } from '../../core/attachments/retriever';
 import {
   shouldCheckpoint,
   generateCheckpointSummary,
@@ -32,10 +34,14 @@ export function registerRoutes(app: FastifyInstance): void {
   const db = getDb();
   const queries = new Queries(db);
 
+  function estimateTokens(text: string): number {
+    return Math.ceil(text.split(/\s+/).length * 1.3);
+  }
+
   // ========== CHAT ==========
 
   app.post('/api/chat', async (request: FastifyRequest, reply: FastifyReply) => {
-    const body = request.body as {
+    let body = request.body as {
       message: string;
       conversation_id?: string;
       provider?: ProviderName;
@@ -43,8 +49,47 @@ export function registerRoutes(app: FastifyInstance): void {
       system_prompt?: string;
     };
 
-    if (!body.message) {
-      return reply.status(400).send({ error: 'Message is required' });
+    let uploadedFiles: UploadedAttachment[] = [];
+
+    if ((request as any).isMultipart?.()) {
+      const fields: Record<string, string> = {};
+      const files: UploadedAttachment[] = [];
+
+      try {
+        const parts = (request as any).parts();
+        for await (const part of parts) {
+          if (part.type === 'file') {
+            const chunks: Buffer[] = [];
+            for await (const chunk of part.file) {
+              chunks.push(chunk as Buffer);
+            }
+            const buffer = Buffer.concat(chunks);
+            files.push({
+              filename: part.filename || 'unnamed-file',
+              mimetype: part.mimetype || 'application/octet-stream',
+              buffer,
+              size: buffer.length,
+            });
+          } else {
+            fields[part.fieldname] = String(part.value ?? '');
+          }
+        }
+      } catch (err: any) {
+        return reply.status(400).send({ error: `Failed to parse multipart request: ${err.message}` });
+      }
+
+      body = {
+        message: fields.message || '',
+        conversation_id: fields.conversation_id || undefined,
+        provider: (fields.provider as ProviderName) || undefined,
+        model: fields.model || undefined,
+        system_prompt: fields.system_prompt || undefined,
+      };
+      uploadedFiles = files;
+    }
+
+    if (!body.message && uploadedFiles.length === 0) {
+      return reply.status(400).send({ error: 'Message or attachment is required' });
     }
 
     const config = loadConfig();
@@ -79,11 +124,46 @@ export function registerRoutes(app: FastifyInstance): void {
       conversationId = conv.id;
     }
 
+    const attachmentResult = await processAttachments(uploadedFiles);
+
+    if (attachmentResult?.files?.length) {
+      for (const file of attachmentResult.files) {
+        const storedFile = queries.insertFile(
+          conversationId,
+          file.filename,
+          file.mimetype || null,
+          file.size,
+          file.kind,
+          file.summary || null,
+          file.keyPoints.join('\n') || null
+        );
+
+        file.chunks.forEach((chunk, index) => {
+          const chunkRecord = queries.insertFileChunk(
+            storedFile.id,
+            conversationId,
+            index,
+            chunk,
+            estimateTokens(chunk)
+          );
+
+          embed(chunk)
+            .then((embedding) => {
+              if (embedding) {
+                queries.insertFileChunkEmbedding(chunkRecord.id, embedding);
+              }
+            })
+            .catch(() => {});
+        });
+      }
+    }
+
     // Store user message
-    const userMsg = queries.insertMessage(conversationId, 'user', body.message);
+    const displayMessage = body.message || '[User sent attachments]';
+    const userMsg = queries.insertMessage(conversationId, 'user', displayMessage);
 
     // Embed the user message (async, don't block)
-    embed(body.message).then((embedding) => {
+    embed(displayMessage).then((embedding) => {
       if (embedding) {
         queries.insertEmbedding(userMsg.id, embedding);
       }
@@ -111,13 +191,29 @@ export function registerRoutes(app: FastifyInstance): void {
     let contextResult;
     try {
       contextResult = await assembleContext(
-        body.message,
+        displayMessage,
         conversationId,
         systemPrompt,
         queries,
         checkpoint?.summary || null,
         assemblerConfig
       );
+
+      if (attachmentResult?.inlineContext) {
+        contextResult.messages.push({ role: 'system', content: attachmentResult.inlineContext });
+        const attachmentTokens = estimateTokens(attachmentResult.inlineContext);
+        contextResult.tokensRaw += attachmentTokens;
+        contextResult.tokensSent += attachmentTokens;
+      }
+
+      const fileChunks = await retrieveRelevantFileChunks(displayMessage, conversationId, queries, 6);
+      const fileContext = buildFileContextBlock(fileChunks);
+      if (fileContext) {
+        contextResult.messages.push({ role: 'system', content: fileContext });
+        const fileContextTokens = estimateTokens(fileContext);
+        contextResult.tokensRaw += fileContextTokens;
+        contextResult.tokensSent += fileContextTokens;
+      }
     } catch (err: any) {
       return reply.status(500).send({ error: `Context assembly failed: ${err.message}` });
     }
@@ -133,6 +229,7 @@ export function registerRoutes(app: FastifyInstance): void {
       tokens_raw: contextResult.tokensRaw,
       tokens_sent: contextResult.tokensSent,
       rag_results: contextResult.ragResultCount,
+      attachments_processed: attachmentResult?.count || 0,
       savings_percent:
         contextResult.tokensRaw > 0
           ? Math.round(
@@ -211,7 +308,7 @@ export function registerRoutes(app: FastifyInstance): void {
               role: 'system',
               content: 'Generate a short title (max 6 words) for this conversation. Reply with only the title, no quotes.',
             },
-            { role: 'user', content: body.message },
+            { role: 'user', content: displayMessage },
           ],
           model,
           maxTokens: 20,
@@ -219,7 +316,7 @@ export function registerRoutes(app: FastifyInstance): void {
         });
         queries.updateConversation(conversationId, titleResponse.content.trim());
       } catch {
-        queries.updateConversation(conversationId, body.message.slice(0, 50));
+        queries.updateConversation(conversationId, displayMessage.slice(0, 50));
       }
     }
 
@@ -348,6 +445,7 @@ export function registerRoutes(app: FastifyInstance): void {
       status: 'ok',
       conversations: conversations.length,
       configured_providers: Object.keys(config.providers),
+      embedding_mode: getEmbeddingMode(),
       token_usage_summary: tokenUsage,
       timestamp: Date.now(),
     });

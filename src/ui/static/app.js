@@ -49,6 +49,26 @@ const api = {
   },
 
   sendMessage(message, conversationId, provider, model) {
+    return this.sendMessageWithFiles(message, conversationId, provider, model, []);
+  },
+
+  sendMessageWithFiles(message, conversationId, provider, model, files) {
+    if (files && files.length > 0) {
+      const form = new FormData();
+      form.append('message', message || '');
+      if (conversationId) form.append('conversation_id', conversationId);
+      if (provider) form.append('provider', provider);
+      if (model) form.append('model', model);
+      for (const file of files) {
+        form.append('attachments', file, file.name);
+      }
+
+      return fetch('/api/chat', {
+        method: 'POST',
+        body: form,
+      });
+    }
+
     return fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -280,9 +300,11 @@ function App() {
   const [provider, setProvider] = useState('ollama');
   const [model, setModel] = useState('');
   const [tokenStats, setTokenStats] = useState({ raw: 0, sent: 0, saved: 0 });
+  const [selectedFiles, setSelectedFiles] = useState([]);
 
   const chatEndRef = useRef(null);
   const textareaRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   // Load conversations on mount
   useEffect(() => {
@@ -346,20 +368,29 @@ function App() {
   };
 
   const sendMessage = useCallback(async () => {
-    if (!input.trim() || isStreaming) return;
+    if ((!input.trim() && selectedFiles.length === 0) || isStreaming) return;
 
     const userMessage = input.trim();
+    const files = selectedFiles;
     setInput('');
+    setSelectedFiles([]);
+    if (fileInputRef.current) fileInputRef.current.value = '';
     setIsStreaming(true);
 
     // Add user message to UI
-    setMessages((prev) => [...prev, { role: 'user', content: userMessage }]);
+    const attachmentLine = files.length
+      ? `\n\n[Attached: ${files.map((f) => f.name).join(', ')}]`
+      : '';
+    setMessages((prev) => [...prev, {
+      role: 'user',
+      content: `${userMessage || '[User sent attachments]'}${attachmentLine}`,
+    }]);
 
     // Add placeholder for assistant
     setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
 
     try {
-      const response = await api.sendMessage(userMessage, activeConvId, provider, model);
+      const response = await api.sendMessageWithFiles(userMessage, activeConvId, provider, model, files);
 
       let fullContent = '';
       for await (const { event, data } of parseSSE(response)) {
@@ -410,7 +441,17 @@ function App() {
     }
 
     setIsStreaming(false);
-  }, [input, isStreaming, activeConvId, provider, model]);
+  }, [input, selectedFiles, isStreaming, activeConvId, provider, model]);
+
+  const onPickFiles = (e) => {
+    const picked = Array.from(e.target.files || []);
+    if (!picked.length) return;
+    setSelectedFiles((prev) => [...prev, ...picked].slice(0, 8));
+  };
+
+  const removeFile = (index) => {
+    setSelectedFiles((prev) => prev.filter((_, i) => i !== index));
+  };
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -487,7 +528,37 @@ function App() {
         </div>
 
         <div class="input-area">
+          ${selectedFiles.length > 0 ? html`
+            <div style="max-width: 800px; margin: 0 auto 10px auto; display: flex; flex-wrap: wrap; gap: 6px;">
+              ${selectedFiles.map((file, index) => html`
+                <span style="background: var(--bg-tertiary); border: 1px solid var(--border); color: var(--text-secondary); padding: 4px 8px; border-radius: 999px; font-size: 12px; display: inline-flex; align-items: center; gap: 6px;">
+                  ${file.name}
+                  <button
+                    style="background: transparent; border: none; color: var(--text-muted); cursor: pointer; font-size: 12px;"
+                    onClick=${() => removeFile(index)}
+                  >✕</button>
+                </span>
+              `)}
+            </div>
+          ` : null}
+
           <div class="input-container">
+            <input
+              ref=${fileInputRef}
+              type="file"
+              multiple
+              style="display:none"
+              onChange=${onPickFiles}
+            />
+            <button
+              class="send-btn"
+              style="background: var(--bg-tertiary); color: var(--text-primary);"
+              onClick=${() => fileInputRef.current && fileInputRef.current.click()}
+              disabled=${isStreaming}
+              title="Attach files"
+            >
+              Attach
+            </button>
             <textarea
               ref=${textareaRef}
               placeholder="Send a message... (Shift+Enter for new line)"
@@ -500,7 +571,7 @@ function App() {
             <button
               class="send-btn"
               onClick=${sendMessage}
-              disabled=${isStreaming || !input.trim()}
+              disabled=${isStreaming || (!input.trim() && selectedFiles.length === 0)}
             >
               ${isStreaming ? 'Sending...' : 'Send'}
             </button>

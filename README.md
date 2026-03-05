@@ -22,6 +22,10 @@ OpenGauge runs a local web chat app with:
 npx opengauge
 ```
 
+You do not need to install OpenGauge globally first.
+`npx` will download the package (if not already cached) and run it.
+On first run, it may take a little longer while it fetches the package.
+
 This starts a local server and opens the app in your browser.
 
 Default URL:

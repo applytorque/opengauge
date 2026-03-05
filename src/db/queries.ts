@@ -40,6 +40,28 @@ export interface Checkpoint {
   created_at: number;
 }
 
+export interface StoredFile {
+  id: string;
+  conversation_id: string;
+  filename: string;
+  mimetype: string | null;
+  size_bytes: number;
+  file_kind: string;
+  summary: string | null;
+  key_points: string | null;
+  created_at: number;
+}
+
+export interface FileChunk {
+  id: string;
+  file_id: string;
+  conversation_id: string;
+  chunk_index: number;
+  content: string;
+  token_estimate: number | null;
+  created_at: number;
+}
+
 export class Queries {
   private db: Database.Database;
 
@@ -60,6 +82,11 @@ export class Queries {
 
   private stmtInsertCheckpoint: Database.Statement;
   private stmtGetLatestCheckpoint: Database.Statement;
+
+  private stmtInsertFile: Database.Statement;
+  private stmtInsertFileChunk: Database.Statement;
+  private stmtListFileChunksByConversation: Database.Statement;
+  private stmtListFilesByConversation: Database.Statement;
 
   constructor(db: Database.Database) {
     this.db = db;
@@ -131,6 +158,25 @@ export class Queries {
 
     this.stmtGetLatestCheckpoint = db.prepare(`
       SELECT * FROM checkpoints WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1
+    `);
+
+    // File ingestion statements
+    this.stmtInsertFile = db.prepare(`
+      INSERT INTO files (id, conversation_id, filename, mimetype, size_bytes, file_kind, summary, key_points, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    this.stmtInsertFileChunk = db.prepare(`
+      INSERT INTO file_chunks (id, file_id, conversation_id, chunk_index, content, token_estimate, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    this.stmtListFileChunksByConversation = db.prepare(`
+      SELECT * FROM file_chunks WHERE conversation_id = ? ORDER BY created_at DESC
+    `);
+
+    this.stmtListFilesByConversation = db.prepare(`
+      SELECT * FROM files WHERE conversation_id = ? ORDER BY created_at DESC
     `);
   }
 
@@ -226,6 +272,106 @@ export class Queries {
 
   getLatestCheckpoint(conversationId: string): Checkpoint | undefined {
     return this.stmtGetLatestCheckpoint.get(conversationId) as Checkpoint | undefined;
+  }
+
+  // ---- Files / Chunks ----
+
+  insertFile(
+    conversationId: string,
+    filename: string,
+    mimetype: string | null,
+    sizeBytes: number,
+    fileKind: string,
+    summary: string | null,
+    keyPoints: string | null
+  ): StoredFile {
+    const id = uuidv4();
+    const now = Date.now();
+    this.stmtInsertFile.run(
+      id,
+      conversationId,
+      filename,
+      mimetype,
+      sizeBytes,
+      fileKind,
+      summary,
+      keyPoints,
+      now
+    );
+    return {
+      id,
+      conversation_id: conversationId,
+      filename,
+      mimetype,
+      size_bytes: sizeBytes,
+      file_kind: fileKind,
+      summary,
+      key_points: keyPoints,
+      created_at: now,
+    };
+  }
+
+  insertFileChunk(
+    fileId: string,
+    conversationId: string,
+    chunkIndex: number,
+    content: string,
+    tokenEstimate?: number
+  ): FileChunk {
+    const id = uuidv4();
+    const now = Date.now();
+    this.stmtInsertFileChunk.run(
+      id,
+      fileId,
+      conversationId,
+      chunkIndex,
+      content,
+      tokenEstimate ?? null,
+      now
+    );
+    return {
+      id,
+      file_id: fileId,
+      conversation_id: conversationId,
+      chunk_index: chunkIndex,
+      content,
+      token_estimate: tokenEstimate ?? null,
+      created_at: now,
+    };
+  }
+
+  listFilesByConversation(conversationId: string): StoredFile[] {
+    return this.stmtListFilesByConversation.all(conversationId) as StoredFile[];
+  }
+
+  listFileChunksByConversation(conversationId: string): FileChunk[] {
+    return this.stmtListFileChunksByConversation.all(conversationId) as FileChunk[];
+  }
+
+  insertFileChunkEmbedding(chunkId: string, vector: Float32Array): void {
+    try {
+      this.db.prepare('INSERT INTO file_chunk_embeddings (chunk_id, vector) VALUES (?, ?)')
+        .run(chunkId, Buffer.from(vector.buffer));
+    } catch {
+      // sqlite-vec not available
+    }
+  }
+
+  searchSimilarFileChunks(
+    queryVector: Float32Array,
+    limit: number = 12
+  ): Array<{ chunk_id: string; distance: number }> {
+    try {
+      return this.db.prepare(`
+        SELECT chunk_id, distance
+        FROM file_chunk_embeddings
+        WHERE vector MATCH ?
+        ORDER BY distance
+        LIMIT ?
+      `).all(Buffer.from(queryVector.buffer), limit) as Array<{ chunk_id: string; distance: number }>;
+    } catch {
+      return [];
+    }
   }
 
   // ---- Embeddings ----

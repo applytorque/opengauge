@@ -11,6 +11,7 @@ import os from 'os';
 
 let session: any = null;
 let sessionChecked = false;
+let usingFallbackEmbeddings = false;
 let tokenizer: any = null;
 
 // Simple word-piece tokenizer for MiniLM
@@ -36,6 +37,7 @@ async function getSession(): Promise<any> {
     const modelPath = path.join(modelDir, 'all-MiniLM-L6-v2.onnx');
 
     if (!fs.existsSync(modelPath)) {
+      usingFallbackEmbeddings = true;
       console.log('[OpenGauge] Embedding model not found. Using fallback hash embeddings.');
       console.log(`  To enable full semantic search, place all-MiniLM-L6-v2.onnx in ${modelDir}`);
       return null;
@@ -45,12 +47,19 @@ async function getSession(): Promise<any> {
       executionProviders: ['cpu'],
     });
 
+    usingFallbackEmbeddings = false;
+
     console.log('[OpenGauge] ONNX embedding model loaded successfully.');
     return session;
   } catch (error) {
+    usingFallbackEmbeddings = true;
     console.warn('[OpenGauge] Failed to initialize ONNX embedding model. Using fallback.', error);
     return null;
   }
+}
+
+export function getEmbeddingMode(): 'onnx-minilm' | 'fallback-hash' {
+  return usingFallbackEmbeddings ? 'fallback-hash' : 'onnx-minilm';
 }
 
 /**
