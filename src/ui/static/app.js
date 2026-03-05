@@ -156,11 +156,23 @@ function isGreetingPrompt(text) {
   return greetingPattern.test((text || '').trim());
 }
 
+function isLowIntentPrompt(text) {
+  const normalized = (text || '').trim().toLowerCase();
+  const lowIntent = new Set([
+    'ok', 'okay', 'k', 'kk', 'sure', 'yep', 'yes', 'yup', 'cool', 'great',
+    'nice', 'done', 'thanks', 'thank you', 'thx',
+  ]);
+
+  if (lowIntent.has(normalized)) return true;
+  return /^(ok(ay)?|k+|sure|yep|yes|yup|cool|great|nice|done|thx|thanks|thank\s+you)[!.?]*$/i.test((text || '').trim());
+}
+
 function shouldUseAutoImprovedPrompt(originalPrompt, improvedPrompt) {
   const original = (originalPrompt || '').trim();
   const improved = (improvedPrompt || '').trim();
   if (!original || !improved) return false;
   if (isGreetingPrompt(original)) return false;
+  if (isLowIntentPrompt(original)) return false;
 
   const originalTokens = tokenizePrompt(original);
   const improvedTokens = tokenizePrompt(improved);
@@ -627,7 +639,7 @@ function App() {
     if (fileInputRef.current) fileInputRef.current.value = '';
     setIsStreaming(true);
 
-    if (autoImproveEnabled && userMessage && !isGreetingPrompt(userMessage)) {
+    if (autoImproveEnabled && userMessage && !isGreetingPrompt(userMessage) && !isLowIntentPrompt(userMessage)) {
       try {
         setImproveLoading(true);
         const autoImproved = await api.improvePrompt(
