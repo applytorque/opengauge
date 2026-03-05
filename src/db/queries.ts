@@ -62,6 +62,29 @@ export interface FileChunk {
   created_at: number;
 }
 
+export interface PromptAnalyticsRecord {
+  message_id: string;
+  conversation_id: string;
+  created_at: number;
+  prompt_tokens_raw: number;
+  prompt_tokens_sent: number;
+  score_specificity: number;
+  score_goal_clarity: number;
+  score_constraints: number;
+  score_context_completeness: number;
+  score_structure: number;
+  score_penalties: number;
+  score_total: number;
+  duplicate_cluster_id: string | null;
+  duplicate_similarity: number | null;
+  duplicate_is_duplicate: number;
+  duplicate_repeat_count: number;
+  has_attachments: number;
+  attachment_text_extracted: number;
+  retry_turn: number;
+  repair_turn: number;
+}
+
 export class Queries {
   private db: Database.Database;
 
@@ -87,6 +110,11 @@ export class Queries {
   private stmtInsertFileChunk: Database.Statement;
   private stmtListFileChunksByConversation: Database.Statement;
   private stmtListFilesByConversation: Database.Statement;
+
+  private stmtInsertPromptAnalytics: Database.Statement;
+  private stmtListPromptAnalytics: Database.Statement;
+  private stmtListPromptAnalyticsByConversation: Database.Statement;
+  private stmtListPromptAnalyticsWindow: Database.Statement;
 
   constructor(db: Database.Database) {
     this.db = db;
@@ -177,6 +205,44 @@ export class Queries {
 
     this.stmtListFilesByConversation = db.prepare(`
       SELECT * FROM files WHERE conversation_id = ? ORDER BY created_at DESC
+    `);
+
+    // Prompt analytics statements
+    this.stmtInsertPromptAnalytics = db.prepare(`
+      INSERT OR REPLACE INTO prompt_analytics (
+        message_id,
+        conversation_id,
+        created_at,
+        prompt_tokens_raw,
+        prompt_tokens_sent,
+        score_specificity,
+        score_goal_clarity,
+        score_constraints,
+        score_context_completeness,
+        score_structure,
+        score_penalties,
+        score_total,
+        duplicate_cluster_id,
+        duplicate_similarity,
+        duplicate_is_duplicate,
+        duplicate_repeat_count,
+        has_attachments,
+        attachment_text_extracted,
+        retry_turn,
+        repair_turn
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    this.stmtListPromptAnalytics = db.prepare(`
+      SELECT * FROM prompt_analytics ORDER BY created_at DESC LIMIT ?
+    `);
+
+    this.stmtListPromptAnalyticsByConversation = db.prepare(`
+      SELECT * FROM prompt_analytics WHERE conversation_id = ? ORDER BY created_at DESC LIMIT ?
+    `);
+
+    this.stmtListPromptAnalyticsWindow = db.prepare(`
+      SELECT * FROM prompt_analytics WHERE created_at >= ? ORDER BY created_at DESC
     `);
   }
 
@@ -399,5 +465,44 @@ export class Queries {
     } catch {
       return [];
     }
+  }
+
+  // ---- Prompt Analytics ----
+
+  insertPromptAnalytics(record: PromptAnalyticsRecord): void {
+    this.stmtInsertPromptAnalytics.run(
+      record.message_id,
+      record.conversation_id,
+      record.created_at,
+      record.prompt_tokens_raw,
+      record.prompt_tokens_sent,
+      record.score_specificity,
+      record.score_goal_clarity,
+      record.score_constraints,
+      record.score_context_completeness,
+      record.score_structure,
+      record.score_penalties,
+      record.score_total,
+      record.duplicate_cluster_id,
+      record.duplicate_similarity,
+      record.duplicate_is_duplicate,
+      record.duplicate_repeat_count,
+      record.has_attachments,
+      record.attachment_text_extracted,
+      record.retry_turn,
+      record.repair_turn
+    );
+  }
+
+  listPromptAnalytics(limit: number = 100, conversationId?: string): PromptAnalyticsRecord[] {
+    if (conversationId) {
+      return this.stmtListPromptAnalyticsByConversation.all(conversationId, limit) as PromptAnalyticsRecord[];
+    }
+    return this.stmtListPromptAnalytics.all(limit) as PromptAnalyticsRecord[];
+  }
+
+  listPromptAnalyticsByWindow(windowMs: number): PromptAnalyticsRecord[] {
+    const since = Date.now() - windowMs;
+    return this.stmtListPromptAnalyticsWindow.all(since) as PromptAnalyticsRecord[];
   }
 }

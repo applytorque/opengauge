@@ -10,6 +10,7 @@ import { assembleContext, DEFAULT_ASSEMBLER_CONFIG, AssemblerConfig } from '../.
 import { embed, getEmbeddingMode } from '../../core/rag/embedder';
 import { processAttachments, UploadedAttachment } from '../../core/attachments/processor';
 import { retrieveRelevantFileChunks, buildFileContextBlock } from '../../core/attachments/retriever';
+import { analyzePrompt } from '../../core/analytics/scorer';
 import {
   shouldCheckpoint,
   generateCheckpointSummary,
@@ -56,6 +57,12 @@ export function registerRoutes(app: FastifyInstance): void {
   function isGeminiQuotaError(err: unknown): boolean {
     const msg = String((err as any)?.message || err || '').toLowerCase();
     return msg.includes('gemini') && (msg.includes('quota') || msg.includes('resource_exhausted') || msg.includes('(429)'));
+  }
+
+  function toWindowMs(window: string): number {
+    if (window === '30d') return 30 * 24 * 60 * 60 * 1000;
+    if (window === '1d') return 24 * 60 * 60 * 1000;
+    return 7 * 24 * 60 * 60 * 1000;
   }
 
   // ========== CHAT ==========
@@ -149,6 +156,21 @@ export function registerRoutes(app: FastifyInstance): void {
 
     const attachmentResult = await processAttachments(uploadedFiles);
 
+    const previousMessages = queries.getMessages(conversationId);
+    const previousUserMessages = previousMessages.filter((msg) => msg.role === 'user');
+    const previousPromptAnalytics = queries.listPromptAnalytics(500, conversationId);
+    const analyticsByMessageId = new Map(
+      previousPromptAnalytics.map((item) => [item.message_id, item])
+    );
+
+    const previousPromptInputs = previousUserMessages.map((msg) => {
+      const analytics = analyticsByMessageId.get(msg.id);
+      return {
+        content: msg.content,
+        clusterId: analytics?.duplicate_cluster_id || msg.id,
+      };
+    });
+
     if (attachmentResult?.files?.length) {
       for (const file of attachmentResult.files) {
         const storedFile = queries.insertFile(
@@ -184,6 +206,38 @@ export function registerRoutes(app: FastifyInstance): void {
     // Store user message
     const displayMessage = body.message || '[User sent attachments]';
     const userMsg = queries.insertMessage(conversationId, 'user', displayMessage);
+
+    const promptAnalysis = analyzePrompt(displayMessage, previousPromptInputs, {
+      hasAttachments: uploadedFiles.length > 0,
+      attachmentTextExtracted: Boolean(attachmentResult?.inlineContext),
+    });
+
+    const duplicateClusterId = promptAnalysis.duplicate.isDuplicate
+      ? promptAnalysis.duplicate.clusterId || previousUserMessages[previousUserMessages.length - 1]?.id || userMsg.id
+      : userMsg.id;
+
+    queries.insertPromptAnalytics({
+      message_id: userMsg.id,
+      conversation_id: conversationId,
+      created_at: Date.now(),
+      prompt_tokens_raw: promptAnalysis.promptTokensRaw,
+      prompt_tokens_sent: promptAnalysis.promptTokensSent,
+      score_specificity: promptAnalysis.scores.specificity,
+      score_goal_clarity: promptAnalysis.scores.goal_clarity,
+      score_constraints: promptAnalysis.scores.constraints,
+      score_context_completeness: promptAnalysis.scores.context_completeness,
+      score_structure: promptAnalysis.scores.structure,
+      score_penalties: promptAnalysis.scores.penalties,
+      score_total: promptAnalysis.scores.total,
+      duplicate_cluster_id: duplicateClusterId,
+      duplicate_similarity: promptAnalysis.duplicate.similarity,
+      duplicate_is_duplicate: promptAnalysis.duplicate.isDuplicate ? 1 : 0,
+      duplicate_repeat_count: promptAnalysis.duplicate.repeatCount,
+      has_attachments: uploadedFiles.length > 0 ? 1 : 0,
+      attachment_text_extracted: attachmentResult?.inlineContext ? 1 : 0,
+      retry_turn: promptAnalysis.retryTurn ? 1 : 0,
+      repair_turn: promptAnalysis.repairTurn ? 1 : 0,
+    });
 
     // Embed the user message (async, don't block)
     embed(displayMessage).then((embedding) => {
@@ -454,6 +508,121 @@ export function registerRoutes(app: FastifyInstance): void {
   app.get('/api/token-usage', async (_request: FastifyRequest, reply: FastifyReply) => {
     const aggregated = queries.getAggregatedTokenUsage();
     return reply.send(aggregated);
+  });
+
+  // ========== ANALYTICS ==========
+
+  app.get('/api/analytics/messages', async (request: FastifyRequest, reply: FastifyReply) => {
+    const query = request.query as { conversation_id?: string; limit?: string };
+    const limit = Math.max(1, Math.min(500, Number(query.limit || 100)));
+
+    const rows = queries.listPromptAnalytics(limit, query.conversation_id);
+    return reply.send(rows.map((row) => ({
+      message_id: row.message_id,
+      conversation_id: row.conversation_id,
+      created_at: row.created_at,
+      prompt_tokens_raw: row.prompt_tokens_raw,
+      prompt_tokens_sent: row.prompt_tokens_sent,
+      scores: {
+        specificity: row.score_specificity,
+        goal_clarity: row.score_goal_clarity,
+        constraints: row.score_constraints,
+        context_completeness: row.score_context_completeness,
+        structure: row.score_structure,
+        penalties: row.score_penalties,
+        total: row.score_total,
+      },
+      duplicate: {
+        cluster_id: row.duplicate_cluster_id,
+        similarity: row.duplicate_similarity || 0,
+        is_duplicate: !!row.duplicate_is_duplicate,
+        repeat_count: row.duplicate_repeat_count,
+      },
+      signals: {
+        has_attachments: !!row.has_attachments,
+        attachment_text_extracted: !!row.attachment_text_extracted,
+        retry_turn: !!row.retry_turn,
+        repair_turn: !!row.repair_turn,
+      },
+    })));
+  });
+
+  app.get('/api/analytics/summary', async (request: FastifyRequest, reply: FastifyReply) => {
+    const query = request.query as { window?: string };
+    const window = query.window || '7d';
+    const rows = queries.listPromptAnalyticsByWindow(toWindowMs(window));
+
+    const previousRows = queries.listPromptAnalyticsByWindow(toWindowMs(window) * 2)
+      .filter((row) => row.created_at < Date.now() - toWindowMs(window));
+
+    const avg = (values: number[]) => {
+      if (!values.length) return 0;
+      return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
+    };
+
+    const currentScore = avg(rows.map((row) => row.score_total));
+    const previousScore = avg(previousRows.map((row) => row.score_total));
+    const currentDup = rows.filter((row) => row.duplicate_is_duplicate).length;
+    const previousDup = previousRows.filter((row) => row.duplicate_is_duplicate).length;
+
+    const avgRaw = avg(rows.map((row) => row.prompt_tokens_raw));
+    const avgSent = avg(rows.map((row) => row.prompt_tokens_sent));
+    const compressionRatio = avgRaw > 0 ? Number((avgSent / avgRaw).toFixed(3)) : 1;
+
+    const clusters = new Map<string, number>();
+    for (const row of rows) {
+      if (!row.duplicate_cluster_id) continue;
+      clusters.set(row.duplicate_cluster_id, (clusters.get(row.duplicate_cluster_id) || 0) + 1);
+    }
+
+    const topClusters = Array.from(clusters.entries())
+      .filter(([, count]) => count > 1)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([clusterId, count]) => ({ cluster_id: clusterId, count }));
+
+    const tips: Array<{ id: string; title: string; reason: string }> = [];
+    if (currentScore < 60) {
+      tips.push({
+        id: 'add_constraints',
+        title: 'Add clearer constraints',
+        reason: 'Include format, length, and audience to improve answer precision.',
+      });
+    }
+    if (currentDup >= 3) {
+      tips.push({
+        id: 'avoid_duplicates',
+        title: 'Reduce duplicate prompts',
+        reason: 'Reuse a previous good prompt and only update missing details.',
+      });
+    }
+    if (rows.filter((row) => row.score_context_completeness < 10).length >= 3) {
+      tips.push({
+        id: 'add_context',
+        title: 'Add context before asking',
+        reason: 'Briefly include project background, desired output, and constraints.',
+      });
+    }
+
+    return reply.send({
+      window,
+      health_score: currentScore,
+      trend: {
+        score_delta: currentScore - previousScore,
+        duplicate_delta: currentDup - previousDup,
+        efficiency_delta: avgRaw - avgSent,
+      },
+      efficiency: {
+        avg_raw_tokens: avgRaw,
+        avg_sent_tokens: avgSent,
+        compression_ratio: compressionRatio,
+      },
+      duplicates: {
+        count: currentDup,
+        top_clusters: topClusters,
+      },
+      tips,
+    });
   });
 
   // ========== CONFIG ==========

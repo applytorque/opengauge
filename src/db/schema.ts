@@ -86,6 +86,40 @@ export function initSchema(db: Database.Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_file_chunks_file
       ON file_chunks(file_id, chunk_index);
+
+    -- Prompt analytics
+    CREATE TABLE IF NOT EXISTS prompt_analytics (
+      message_id                 TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+      conversation_id            TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+      created_at                 INTEGER NOT NULL,
+
+      prompt_tokens_raw          INTEGER NOT NULL,
+      prompt_tokens_sent         INTEGER NOT NULL,
+
+      score_specificity          INTEGER NOT NULL,
+      score_goal_clarity         INTEGER NOT NULL,
+      score_constraints          INTEGER NOT NULL,
+      score_context_completeness INTEGER NOT NULL,
+      score_structure            INTEGER NOT NULL,
+      score_penalties            INTEGER NOT NULL,
+      score_total                INTEGER NOT NULL,
+
+      duplicate_cluster_id       TEXT,
+      duplicate_similarity       REAL,
+      duplicate_is_duplicate     INTEGER NOT NULL DEFAULT 0,
+      duplicate_repeat_count     INTEGER NOT NULL DEFAULT 0,
+
+      has_attachments            INTEGER NOT NULL DEFAULT 0,
+      attachment_text_extracted  INTEGER NOT NULL DEFAULT 0,
+      retry_turn                 INTEGER NOT NULL DEFAULT 0,
+      repair_turn                INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_prompt_analytics_conversation
+      ON prompt_analytics(conversation_id, created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_prompt_analytics_created
+      ON prompt_analytics(created_at);
   `);
 
   // Try creating the embeddings virtual table (requires sqlite-vec)

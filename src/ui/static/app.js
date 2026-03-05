@@ -48,6 +48,18 @@ const api = {
     return res.json();
   },
 
+  async getAnalyticsSummary(window = '7d') {
+    const res = await fetch(`/api/analytics/summary?window=${encodeURIComponent(window)}`);
+    return res.json();
+  },
+
+  async getAnalyticsMessages(limit = 100, conversationId = null) {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (conversationId) params.set('conversation_id', conversationId);
+    const res = await fetch(`/api/analytics/messages?${params.toString()}`);
+    return res.json();
+  },
+
   sendMessage(message, conversationId, provider, model) {
     return this.sendMessageWithFiles(message, conversationId, provider, model, []);
   },
@@ -204,7 +216,7 @@ function SetupWizard({ onComplete, onSkip }) {
   `;
 }
 
-function Sidebar({ conversations, activeId, onSelect, onNew, onDelete, onSettings }) {
+function Sidebar({ conversations, activeId, onSelect, onNew, onDelete, onSettings, onAnalytics, analyticsActive }) {
   return html`
     <div class="sidebar">
       <div class="sidebar-header">
@@ -238,6 +250,11 @@ function Sidebar({ conversations, activeId, onSelect, onNew, onDelete, onSetting
       </div>
 
       <div class="sidebar-footer">
+        <button
+          class="settings-btn"
+          style=${analyticsActive ? 'margin-bottom: 8px; border-color: var(--accent); color: var(--text-primary);' : 'margin-bottom: 8px;'}
+          onClick=${onAnalytics}
+        >📊 Analytics</button>
         <button class="settings-btn" onClick=${onSettings}>⚙ Settings</button>
       </div>
     </div>
@@ -290,6 +307,60 @@ function EmptyState() {
   `;
 }
 
+function AnalyticsView({ summary, rows, loading, onRefresh }) {
+  if (loading) {
+    return html`
+      <div class="empty-state">
+        <h2>Loading analytics...</h2>
+      </div>
+    `;
+  }
+
+  if (!summary) {
+    return html`
+      <div class="empty-state">
+        <h2>No analytics yet</h2>
+        <p>Send a few prompts to generate coaching insights.</p>
+      </div>
+    `;
+  }
+
+  return html`
+    <div class="chat-area" style="gap: 12px;">
+      <div class="message" style="max-width: 900px;">
+        <div class="role" style="color: var(--accent);">Prompt Health</div>
+        <div class="content">Score: <b>${summary.health_score}</b>/100</div>
+        <div class="meta">Score delta: ${summary.trend?.score_delta || 0} | Duplicate delta: ${summary.trend?.duplicate_delta || 0}</div>
+      </div>
+
+      <div class="message" style="max-width: 900px;">
+        <div class="role" style="color: var(--warning);">Efficiency</div>
+        <div class="content">Avg raw: ${summary.efficiency?.avg_raw_tokens || 0} tokens | Avg sent: ${summary.efficiency?.avg_sent_tokens || 0} tokens | Ratio: ${summary.efficiency?.compression_ratio || 1}</div>
+      </div>
+
+      <div class="message" style="max-width: 900px;">
+        <div class="role" style="color: var(--success);">Coaching Tips</div>
+        <div class="content">
+          ${(summary.tips && summary.tips.length > 0)
+            ? summary.tips.map((tip) => `• ${tip.title} — ${tip.reason}`).join('\n')
+            : '• Great quality prompts overall. Keep adding context and format constraints.'}
+        </div>
+      </div>
+
+      <div class="message" style="max-width: 900px;">
+        <div class="role" style="color: var(--text-secondary);">Recent Prompt Scores</div>
+        <div class="content">
+          ${(rows || []).slice(0, 12).map((row, index) => `${index + 1}. score ${row.scores?.total || 0} | duplicate: ${row.duplicate?.is_duplicate ? 'yes' : 'no'} | tokens ${row.prompt_tokens_raw || 0}→${row.prompt_tokens_sent || 0}`).join('\n') || 'No rows yet'}
+        </div>
+      </div>
+
+      <div style="max-width: 900px; margin: 0 auto; width: 100%;">
+        <button class="send-btn" onClick=${onRefresh}>Refresh Analytics</button>
+      </div>
+    </div>
+  `;
+}
+
 // ============ Main App ============
 
 function App() {
@@ -306,6 +377,10 @@ function App() {
   const [selectedFiles, setSelectedFiles] = useState([]);
   const [configuredProviders, setConfiguredProviders] = useState({});
   const [uiError, setUiError] = useState('');
+  const [showAnalytics, setShowAnalytics] = useState(false);
+  const [analyticsSummary, setAnalyticsSummary] = useState(null);
+  const [analyticsRows, setAnalyticsRows] = useState([]);
+  const [analyticsLoading, setAnalyticsLoading] = useState(false);
 
   const providerDefaults = {
     anthropic: 'claude-sonnet-4-20250514',
@@ -367,6 +442,7 @@ function App() {
   }, [configuredProviders]);
 
   const selectConversation = async (id) => {
+    setShowAnalytics(false);
     setActiveConvId(id);
     try {
       const conv = await api.getConversation(id);
@@ -379,9 +455,31 @@ function App() {
   };
 
   const newConversation = () => {
+    setShowAnalytics(false);
     setActiveConvId(null);
     setMessages([]);
   };
+
+  const loadAnalytics = useCallback(async () => {
+    setAnalyticsLoading(true);
+    try {
+      const [summary, rows] = await Promise.all([
+        api.getAnalyticsSummary('7d'),
+        api.getAnalyticsMessages(120),
+      ]);
+      setAnalyticsSummary(summary);
+      setAnalyticsRows(rows || []);
+    } catch {
+      setAnalyticsSummary(null);
+      setAnalyticsRows([]);
+    }
+    setAnalyticsLoading(false);
+  }, []);
+
+  const openAnalytics = useCallback(async () => {
+    setShowAnalytics(true);
+    await loadAnalytics();
+  }, [loadAnalytics]);
 
   const deleteConversation = async (id) => {
     await api.deleteConversation(id);
@@ -532,6 +630,8 @@ function App() {
         onNew=${newConversation}
         onDelete=${deleteConversation}
         onSettings=${() => setShowSettings(true)}
+        onAnalytics=${openAnalytics}
+        analyticsActive=${showAnalytics}
       />
 
       <div class="main">
@@ -567,17 +667,25 @@ function App() {
           />
         </div>
 
-        <div class="chat-area">
-          ${messages.length === 0 ? html`<${EmptyState} />` : null}
+        ${showAnalytics ? html`
+          <${AnalyticsView}
+            summary=${analyticsSummary}
+            rows=${analyticsRows}
+            loading=${analyticsLoading}
+            onRefresh=${loadAnalytics}
+          />
+        ` : html`
+          <div class="chat-area">
+            ${messages.length === 0 ? html`<${EmptyState} />` : null}
 
-          ${messages.map((msg, i) => html`
-            <${ChatMessage} key=${i} msg=${msg} />
-          `)}
+            ${messages.map((msg, i) => html`
+              <${ChatMessage} key=${i} msg=${msg} />
+            `)}
 
-          <div ref=${chatEndRef} />
-        </div>
+            <div ref=${chatEndRef} />
+          </div>
 
-        <div class="input-area">
+          <div class="input-area">
           ${uiError ? html`
             <div style="max-width: 800px; margin: 0 auto 10px auto; color: var(--danger); font-size: 13px;">
               ${uiError}
@@ -632,7 +740,8 @@ function App() {
               ${isStreaming ? 'Sending...' : 'Send'}
             </button>
           </div>
-        </div>
+          </div>
+        `}
       </div>
     </div>
   `;
