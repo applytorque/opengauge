@@ -120,6 +120,29 @@ export function initSchema(db: Database.Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_prompt_analytics_created
       ON prompt_analytics(created_at);
+
+    -- Prompt improve events
+    CREATE TABLE IF NOT EXISTS prompt_improvements (
+      id                    TEXT PRIMARY KEY,
+      conversation_id       TEXT REFERENCES conversations(id) ON DELETE CASCADE,
+      created_at            INTEGER NOT NULL,
+      source                TEXT NOT NULL,
+      original_prompt       TEXT NOT NULL,
+      improved_prompt       TEXT NOT NULL,
+      score_before          INTEGER NOT NULL,
+      score_after           INTEGER NOT NULL,
+      clarity_delta         INTEGER NOT NULL,
+      duplicate_risk_delta  REAL NOT NULL,
+      token_sent_delta      INTEGER NOT NULL,
+      score_delta           INTEGER NOT NULL,
+      used_improved         INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_prompt_improvements_created
+      ON prompt_improvements(created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_prompt_improvements_conversation
+      ON prompt_improvements(conversation_id, created_at);
   `);
 
   // Try creating the embeddings virtual table (requires sqlite-vec)

@@ -26,6 +26,19 @@ export interface PromptAnalyticsResult {
   repairTurn: boolean;
 }
 
+export interface PromptImprovementResult {
+  originalPrompt: string;
+  improvedPrompt: string;
+  before: PromptAnalyticsResult;
+  after: PromptAnalyticsResult;
+  benefit: {
+    clarityDelta: number;
+    duplicateRiskDelta: number;
+    tokenSentDelta: number;
+    scoreDelta: number;
+  };
+}
+
 function estimateTokens(text: string): number {
   return Math.ceil((text || '').split(/\s+/).filter(Boolean).length * 1.3);
 }
@@ -214,4 +227,89 @@ export function analyzePrompt(
     retryTurn,
     repairTurn,
   };
+}
+
+function deriveGoal(prompt: string): string {
+  const trimmed = (prompt || '').trim();
+  if (!trimmed) return 'Help with the request';
+
+  if (/\?$/.test(trimmed) || trimmed.toLowerCase().startsWith('what') || trimmed.toLowerCase().startsWith('how')) {
+    return `Answer this clearly: ${trimmed}`;
+  }
+
+  return `Complete this request: ${trimmed}`;
+}
+
+function refinePromptHeuristically(prompt: string): string {
+  const trimmed = (prompt || '').trim();
+  if (!trimmed) return '';
+
+  const normalized = normalize(trimmed);
+  const shortAmbiguous = normalized.length < 24 || ['ok', 'hey', 'do it', 'continue', 'nothing else'].includes(normalized);
+
+  const keepClean = (text: string) => text
+    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+
+  if (shortAmbiguous) {
+    return keepClean([
+      deriveGoal(trimmed),
+      'Focus on practical examples and keep the answer concise.',
+      'Output as 3-5 bullet points with key takeaways only.',
+    ].join('\n'));
+  }
+
+  const hasConstraints = includesAny(trimmed, ['format', 'bullet', 'json', 'short', 'concise', 'steps', 'table']);
+  const hasContextMarker = includesAny(trimmed, ['context', 'background', 'attached', 'file', 'screenshot', 'pdf']);
+
+  const lines: string[] = [deriveGoal(trimmed)];
+  if (!hasContextMarker) {
+    lines.push('Include relevant context from earlier discussion when useful.');
+  }
+  if (!hasConstraints) {
+    lines.push('Constraints: keep it concise, avoid fluff, and focus on practical output');
+  }
+  lines.push('Output format: short bullet list + next steps');
+
+  return keepClean(lines.join('\n'));
+}
+
+export function buildPromptImprovementResult(
+  originalPrompt: string,
+  improvedPrompt: string,
+  previousUserPrompts: Array<{ content: string; clusterId?: string | null }>,
+  opts?: {
+    hasAttachments?: boolean;
+    attachmentTextExtracted?: boolean;
+  }
+): PromptImprovementResult {
+  const before = analyzePrompt(originalPrompt, previousUserPrompts, opts);
+  const after = analyzePrompt(improvedPrompt, previousUserPrompts, opts);
+
+  return {
+    originalPrompt,
+    improvedPrompt,
+    before,
+    after,
+    benefit: {
+      clarityDelta: (after.scores.goal_clarity + after.scores.context_completeness) -
+        (before.scores.goal_clarity + before.scores.context_completeness),
+      duplicateRiskDelta: before.duplicate.similarity - after.duplicate.similarity,
+      tokenSentDelta: before.promptTokensSent - after.promptTokensSent,
+      scoreDelta: after.scores.total - before.scores.total,
+    },
+  };
+}
+
+export function improvePrompt(
+  prompt: string,
+  previousUserPrompts: Array<{ content: string; clusterId?: string | null }>,
+  opts?: {
+    hasAttachments?: boolean;
+    attachmentTextExtracted?: boolean;
+  }
+): PromptImprovementResult {
+  const improvedPrompt = refinePromptHeuristically(prompt);
+  return buildPromptImprovementResult(prompt, improvedPrompt, previousUserPrompts, opts);
 }

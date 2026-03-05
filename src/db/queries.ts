@@ -85,6 +85,22 @@ export interface PromptAnalyticsRecord {
   repair_turn: number;
 }
 
+export interface PromptImprovementRecord {
+  id: string;
+  conversation_id: string | null;
+  created_at: number;
+  source: string;
+  original_prompt: string;
+  improved_prompt: string;
+  score_before: number;
+  score_after: number;
+  clarity_delta: number;
+  duplicate_risk_delta: number;
+  token_sent_delta: number;
+  score_delta: number;
+  used_improved: number;
+}
+
 export class Queries {
   private db: Database.Database;
 
@@ -115,6 +131,10 @@ export class Queries {
   private stmtListPromptAnalytics: Database.Statement;
   private stmtListPromptAnalyticsByConversation: Database.Statement;
   private stmtListPromptAnalyticsWindow: Database.Statement;
+
+  private stmtInsertPromptImprovement: Database.Statement;
+  private stmtMarkPromptImprovementUsed: Database.Statement;
+  private stmtListPromptImprovementsWindow: Database.Statement;
 
   constructor(db: Database.Database) {
     this.db = db;
@@ -243,6 +263,36 @@ export class Queries {
 
     this.stmtListPromptAnalyticsWindow = db.prepare(`
       SELECT * FROM prompt_analytics WHERE created_at >= ? ORDER BY created_at DESC
+    `);
+
+    this.stmtInsertPromptImprovement = db.prepare(`
+      INSERT INTO prompt_improvements (
+        id,
+        conversation_id,
+        created_at,
+        source,
+        original_prompt,
+        improved_prompt,
+        score_before,
+        score_after,
+        clarity_delta,
+        duplicate_risk_delta,
+        token_sent_delta,
+        score_delta,
+        used_improved
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    this.stmtMarkPromptImprovementUsed = db.prepare(`
+      UPDATE prompt_improvements
+      SET used_improved = 1
+      WHERE id = ?
+    `);
+
+    this.stmtListPromptImprovementsWindow = db.prepare(`
+      SELECT * FROM prompt_improvements
+      WHERE created_at >= ?
+      ORDER BY created_at DESC
     `);
   }
 
@@ -504,5 +554,63 @@ export class Queries {
   listPromptAnalyticsByWindow(windowMs: number): PromptAnalyticsRecord[] {
     const since = Date.now() - windowMs;
     return this.stmtListPromptAnalyticsWindow.all(since) as PromptAnalyticsRecord[];
+  }
+
+  insertPromptImprovement(
+    source: string,
+    originalPrompt: string,
+    improvedPrompt: string,
+    benefit: {
+      scoreBefore: number;
+      scoreAfter: number;
+      clarityDelta: number;
+      duplicateRiskDelta: number;
+      tokenSentDelta: number;
+      scoreDelta: number;
+    },
+    conversationId?: string
+  ): PromptImprovementRecord {
+    const id = uuidv4();
+    const now = Date.now();
+    this.stmtInsertPromptImprovement.run(
+      id,
+      conversationId || null,
+      now,
+      source,
+      originalPrompt,
+      improvedPrompt,
+      benefit.scoreBefore,
+      benefit.scoreAfter,
+      benefit.clarityDelta,
+      benefit.duplicateRiskDelta,
+      benefit.tokenSentDelta,
+      benefit.scoreDelta,
+      0
+    );
+
+    return {
+      id,
+      conversation_id: conversationId || null,
+      created_at: now,
+      source,
+      original_prompt: originalPrompt,
+      improved_prompt: improvedPrompt,
+      score_before: benefit.scoreBefore,
+      score_after: benefit.scoreAfter,
+      clarity_delta: benefit.clarityDelta,
+      duplicate_risk_delta: benefit.duplicateRiskDelta,
+      token_sent_delta: benefit.tokenSentDelta,
+      score_delta: benefit.scoreDelta,
+      used_improved: 0,
+    };
+  }
+
+  markPromptImprovementUsed(id: string): void {
+    this.stmtMarkPromptImprovementUsed.run(id);
+  }
+
+  listPromptImprovementsByWindow(windowMs: number): PromptImprovementRecord[] {
+    const since = Date.now() - windowMs;
+    return this.stmtListPromptImprovementsWindow.all(since) as PromptImprovementRecord[];
   }
 }

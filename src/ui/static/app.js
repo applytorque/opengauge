@@ -60,6 +60,48 @@ const api = {
     return res.json();
   },
 
+  async improvePrompt(prompt, conversationId, provider, model, hasAttachments = false, attachmentTextExtracted = false) {
+    const res = await fetch('/api/analytics/improve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt,
+        conversation_id: conversationId,
+        provider,
+        model,
+        has_attachments: hasAttachments,
+        attachment_text_extracted: attachmentTextExtracted,
+      }),
+    });
+
+    let data = null;
+    try {
+      data = await res.json();
+    } catch {
+      data = null;
+    }
+
+    if (!res.ok) {
+      const message = (data && (data.error || data.message || data.warning)) || `Request failed (${res.status})`;
+      throw new Error(message);
+    }
+
+    if (!data || !data.improved_prompt) {
+      throw new Error('Improve service returned an invalid response');
+    }
+
+    return data;
+  },
+
+  async markImproveUsed(improvementId) {
+    if (!improvementId) return;
+    await fetch('/api/analytics/improve/use', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ improvement_id: improvementId }),
+    });
+  },
+
   sendMessage(message, conversationId, provider, model) {
     return this.sendMessageWithFiles(message, conversationId, provider, model, []);
   },
@@ -93,6 +135,51 @@ const api = {
     });
   },
 };
+
+function tokenizePrompt(text) {
+  return (text || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+function isGreetingPrompt(text) {
+  const normalized = (text || '').trim().toLowerCase();
+  const basic = [
+    'hey', 'hi', 'hello', 'yo', 'sup', 'hola',
+    'good morning', 'good afternoon', 'good evening',
+  ];
+  if (basic.includes(normalized)) return true;
+
+  const greetingPattern = /^(hey+|hi+|hello+|yo+|sup+|hola+)[!.?]*$/i;
+  return greetingPattern.test((text || '').trim());
+}
+
+function shouldUseAutoImprovedPrompt(originalPrompt, improvedPrompt) {
+  const original = (originalPrompt || '').trim();
+  const improved = (improvedPrompt || '').trim();
+  if (!original || !improved) return false;
+  if (isGreetingPrompt(original)) return false;
+
+  const originalTokens = tokenizePrompt(original);
+  const improvedTokens = tokenizePrompt(improved);
+  if (!originalTokens.length || !improvedTokens.length) return false;
+
+  const originalSet = new Set(originalTokens);
+  let overlap = 0;
+  for (const token of improvedTokens) {
+    if (originalSet.has(token)) overlap += 1;
+  }
+
+  const overlapRatio = overlap / Math.max(1, originalSet.size);
+  if (overlapRatio < 0.35 && originalTokens.length <= 8) return false;
+
+  const assistantStylePattern = /\b(i can help|how can i help|what can i help you with|i'm here to assist)\b/i;
+  if (assistantStylePattern.test(improved)) return false;
+
+  return true;
+}
 
 // ============ SSE Parser ============
 
@@ -339,6 +426,16 @@ function AnalyticsView({ summary, rows, loading, onRefresh }) {
       </div>
 
       <div class="message" style="max-width: 900px;">
+        <div class="role" style="color: var(--accent);">Improve Impact</div>
+        <div class="content">
+          Total improves: ${summary.improvements?.total || 0}
+          | Used: ${summary.improvements?.used_count || 0} (${summary.improvements?.usage_rate || 0}%)
+          | Avg score delta: ${summary.improvements?.avg_score_delta || 0}
+        </div>
+        <div class="meta">Source mix — LLM: ${summary.improvements?.source_mix?.llm || 0}, Heuristic: ${summary.improvements?.source_mix?.heuristic || 0}</div>
+      </div>
+
+      <div class="message" style="max-width: 900px;">
         <div class="role" style="color: var(--success);">Coaching Tips</div>
         <div class="content">
           ${(summary.tips && summary.tips.length > 0)
@@ -381,6 +478,15 @@ function App() {
   const [analyticsSummary, setAnalyticsSummary] = useState(null);
   const [analyticsRows, setAnalyticsRows] = useState([]);
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
+  const [improveLoading, setImproveLoading] = useState(false);
+  const [improvePreview, setImprovePreview] = useState(null);
+  const [autoImproveEnabled, setAutoImproveEnabled] = useState(() => {
+    try {
+      return localStorage.getItem('opengauge:autoImprove') === '1';
+    } catch {
+      return false;
+    }
+  });
 
   const providerDefaults = {
     anthropic: 'claude-sonnet-4-20250514',
@@ -403,6 +509,14 @@ function App() {
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('opengauge:autoImprove', autoImproveEnabled ? '1' : '0');
+    } catch {
+      // ignore storage errors
+    }
+  }, [autoImproveEnabled]);
 
   const loadConversations = async () => {
     try {
@@ -458,6 +572,7 @@ function App() {
     setShowAnalytics(false);
     setActiveConvId(null);
     setMessages([]);
+    setImprovePreview(null);
   };
 
   const loadAnalytics = useCallback(async () => {
@@ -499,12 +614,46 @@ function App() {
     }
 
     const userMessage = input.trim();
+    let finalUserMessage = userMessage;
     const files = selectedFiles;
     setUiError('');
+    setImprovePreview(null);
     setInput('');
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+      textareaRef.current.style.overflowY = 'hidden';
+    }
     setSelectedFiles([]);
     if (fileInputRef.current) fileInputRef.current.value = '';
     setIsStreaming(true);
+
+    if (autoImproveEnabled && userMessage && !isGreetingPrompt(userMessage)) {
+      try {
+        setImproveLoading(true);
+        const autoImproved = await api.improvePrompt(
+          userMessage,
+          activeConvId,
+          provider,
+          model,
+          files.length > 0,
+          false
+        );
+        if (autoImproved?.improved_prompt && shouldUseAutoImprovedPrompt(userMessage, autoImproved.improved_prompt)) {
+          finalUserMessage = autoImproved.improved_prompt;
+          if (autoImproved?.improvement_id) {
+            try {
+              await api.markImproveUsed(autoImproved.improvement_id);
+            } catch {
+              // non-blocking
+            }
+          }
+        }
+      } catch {
+        // Continue with original prompt if auto improve fails
+      } finally {
+        setImproveLoading(false);
+      }
+    }
 
     // Add user message to UI
     const attachmentLine = files.length
@@ -512,14 +661,14 @@ function App() {
       : '';
     setMessages((prev) => [...prev, {
       role: 'user',
-      content: `${userMessage || '[User sent attachments]'}${attachmentLine}`,
+      content: `${finalUserMessage || '[User sent attachments]'}${attachmentLine}`,
     }]);
 
     // Add placeholder for assistant
     setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
 
     try {
-      const response = await api.sendMessageWithFiles(userMessage, activeConvId, provider, model, files);
+      const response = await api.sendMessageWithFiles(finalUserMessage, activeConvId, provider, model, files);
 
       if (!response.ok) {
         let message = `Request failed (${response.status})`;
@@ -581,7 +730,42 @@ function App() {
     }
 
     setIsStreaming(false);
-  }, [input, selectedFiles, isStreaming, activeConvId, provider, model, isProviderReady]);
+  }, [
+    input,
+    selectedFiles,
+    isStreaming,
+    activeConvId,
+    provider,
+    model,
+    isProviderReady,
+    autoImproveEnabled,
+  ]);
+
+  const onImprovePrompt = useCallback(async () => {
+    const userMessage = input.trim();
+    if (!userMessage || isStreaming || improveLoading) return;
+
+    setImproveLoading(true);
+    try {
+      const result = await api.improvePrompt(
+        userMessage,
+        activeConvId,
+        provider,
+        model,
+        selectedFiles.length > 0,
+        false
+      );
+
+      if (result?.improved_prompt) {
+        setImprovePreview(result);
+      } else if (result?.error) {
+        setUiError(result.error);
+      }
+    } catch (err) {
+      setUiError(`Improve failed: ${err?.message || 'network error'}`);
+    }
+    setImproveLoading(false);
+  }, [input, isStreaming, improveLoading, activeConvId, provider, model, selectedFiles]);
 
   const onPickFiles = (e) => {
     const picked = Array.from(e.target.files || []);
@@ -604,7 +788,10 @@ function App() {
   const handleInput = (e) => {
     setInput(e.target.value);
     e.target.style.height = 'auto';
-    e.target.style.height = Math.min(e.target.scrollHeight, 200) + 'px';
+    const maxHeight = 200;
+    const nextHeight = Math.min(e.target.scrollHeight, maxHeight);
+    e.target.style.height = nextHeight + 'px';
+    e.target.style.overflowY = e.target.scrollHeight > maxHeight ? 'auto' : 'hidden';
   };
 
   return html`
@@ -706,6 +893,44 @@ function App() {
             </div>
           ` : null}
 
+          ${improvePreview ? html`
+            <div style="max-width: 800px; margin: 0 auto 10px auto; border: 1px solid var(--border); background: var(--bg-secondary); border-radius: 8px; padding: 12px;">
+              <div style="font-size: 13px; color: var(--accent); margin-bottom: 6px; font-weight: 600;">Improved Prompt Preview</div>
+              <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 6px;">Source: ${improvePreview.source || 'heuristic'}</div>
+              <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 8px; white-space: pre-wrap;">${improvePreview.improved_prompt}</div>
+              <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 10px;">
+                Score: ${improvePreview.before?.scores?.total || 0} → ${improvePreview.after?.scores?.total || 0}
+                &nbsp;|&nbsp; Clarity: ${improvePreview.benefit?.clarityDelta >= 0 ? '+' : ''}${improvePreview.benefit?.clarityDelta || 0}
+                &nbsp;|&nbsp; Duplicate risk: ${Number(improvePreview.benefit?.duplicateRiskDelta || 0).toFixed(3)}
+                &nbsp;|&nbsp; Token sent delta: ${improvePreview.benefit?.tokenSentDelta >= 0 ? '+' : ''}${improvePreview.benefit?.tokenSentDelta || 0}
+              </div>
+              <div style="display: flex; gap: 8px;">
+                <button
+                  class="send-btn"
+                  style="height: 36px; padding: 6px 12px;"
+                  onClick=${async () => {
+                    try {
+                      await api.markImproveUsed(improvePreview.improvement_id);
+                    } catch {
+                      // non-blocking
+                    }
+                    setInput(improvePreview.improved_prompt || input);
+                    setImprovePreview(null);
+                    if (textareaRef.current) {
+                      textareaRef.current.style.height = 'auto';
+                      textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 200) + 'px';
+                    }
+                  }}
+                >Use Improved</button>
+                <button
+                  class="send-btn"
+                  style="height: 36px; padding: 6px 12px; background: var(--bg-tertiary); color: var(--text-primary);"
+                  onClick=${() => setImprovePreview(null)}
+                >Keep Original</button>
+              </div>
+            </div>
+          ` : null}
+
           <div class="input-container">
             <input
               ref=${fileInputRef}
@@ -732,6 +957,23 @@ function App() {
               rows="1"
               disabled=${isStreaming}
             />
+            <button
+              class="send-btn"
+              style="background: var(--bg-tertiary); color: var(--text-primary);"
+              onClick=${onImprovePrompt}
+              disabled=${isStreaming || improveLoading || !input.trim()}
+            >
+              ${improveLoading ? 'Improving...' : 'Improve'}
+            </button>
+            <button
+              class="send-btn"
+              style="background: ${autoImproveEnabled ? 'var(--accent)' : 'var(--bg-tertiary)'}; color: ${autoImproveEnabled ? '#fff' : 'var(--text-primary)'};"
+              onClick=${() => setAutoImproveEnabled((prev) => !prev)}
+              disabled=${isStreaming || improveLoading}
+              title="Automatically improve your prompt before sending"
+            >
+              ${autoImproveEnabled ? 'Auto Improve: On' : 'Auto Improve: Off'}
+            </button>
             <button
               class="send-btn"
               onClick=${sendMessage}

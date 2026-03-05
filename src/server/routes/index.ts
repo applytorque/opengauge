@@ -8,9 +8,13 @@ import { Queries } from '../../db/queries';
 import { createProvider, ProviderName, ChatMessage, LLMProvider } from '../../core/providers/adapter';
 import { assembleContext, DEFAULT_ASSEMBLER_CONFIG, AssemblerConfig } from '../../core/rag/assembler';
 import { embed, getEmbeddingMode } from '../../core/rag/embedder';
-import { processAttachments, UploadedAttachment } from '../../core/attachments/processor';
-import { retrieveRelevantFileChunks, buildFileContextBlock } from '../../core/attachments/retriever';
-import { analyzePrompt } from '../../core/analytics/scorer';
+import {
+  processAttachments,
+  UploadedAttachment,
+  retrieveRelevantFileChunks,
+  buildFileContextBlock,
+} from '../../core/attachments';
+import { analyzePrompt, improvePrompt, buildPromptImprovementResult } from '../../core/analytics/scorer';
 import {
   shouldCheckpoint,
   generateCheckpointSummary,
@@ -29,6 +33,57 @@ function sanitizeAssistantText(text: string): string {
     .replace(/^#{1,6}\s+/gm, '')
     .replace(/`([^`]+)`/g, '$1')
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1');
+}
+
+function tokenizePrompt(text: string): string[] {
+  return (text || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+function isGreetingPrompt(text: string): boolean {
+  const normalized = (text || '').trim().toLowerCase();
+  const basic = new Set([
+    'hey',
+    'hi',
+    'hello',
+    'yo',
+    'sup',
+    'hola',
+    'good morning',
+    'good afternoon',
+    'good evening',
+  ]);
+
+  if (basic.has(normalized)) return true;
+  return /^(hey+|hi+|hello+|yo+|sup+|hola+)[!.?]*$/i.test((text || '').trim());
+}
+
+function shouldUseImprovedPrompt(originalPrompt: string, improvedPrompt: string): boolean {
+  const original = (originalPrompt || '').trim();
+  const improved = (improvedPrompt || '').trim();
+  if (!original || !improved) return false;
+  if (isGreetingPrompt(original)) return false;
+
+  const originalTokens = tokenizePrompt(original);
+  const improvedTokens = tokenizePrompt(improved);
+  if (!originalTokens.length || !improvedTokens.length) return false;
+
+  const originalSet = new Set(originalTokens);
+  let overlap = 0;
+  for (const token of improvedTokens) {
+    if (originalSet.has(token)) overlap += 1;
+  }
+
+  const overlapRatio = overlap / Math.max(1, originalSet.size);
+  if (overlapRatio < 0.35 && originalTokens.length <= 8) return false;
+
+  const assistantStylePattern = /\b(i can help|how can i help|what can i help you with|i'm here to assist)\b/i;
+  if (assistantStylePattern.test(improved)) return false;
+
+  return true;
 }
 
 export function registerRoutes(app: FastifyInstance): void {
@@ -183,7 +238,7 @@ export function registerRoutes(app: FastifyInstance): void {
           file.keyPoints.join('\n') || null
         );
 
-        file.chunks.forEach((chunk, index) => {
+        file.chunks.forEach((chunk: string, index: number) => {
           const chunkRecord = queries.insertFileChunk(
             storedFile.id,
             conversationId,
@@ -551,6 +606,7 @@ export function registerRoutes(app: FastifyInstance): void {
     const query = request.query as { window?: string };
     const window = query.window || '7d';
     const rows = queries.listPromptAnalyticsByWindow(toWindowMs(window));
+    const improvements = queries.listPromptImprovementsByWindow(toWindowMs(window));
 
     const previousRows = queries.listPromptAnalyticsByWindow(toWindowMs(window) * 2)
       .filter((row) => row.created_at < Date.now() - toWindowMs(window));
@@ -604,6 +660,16 @@ export function registerRoutes(app: FastifyInstance): void {
       });
     }
 
+    const avgImproveScoreDelta = improvements.length
+      ? Number((improvements.reduce((sum, item) => sum + item.score_delta, 0) / improvements.length).toFixed(2))
+      : 0;
+    const usedImprove = improvements.filter((item) => item.used_improved).length;
+    const improveUsageRate = improvements.length
+      ? Number(((usedImprove / improvements.length) * 100).toFixed(1))
+      : 0;
+    const llmImproveCount = improvements.filter((item) => item.source === 'llm').length;
+    const heuristicImproveCount = improvements.filter((item) => item.source !== 'llm').length;
+
     return reply.send({
       window,
       health_score: currentScore,
@@ -621,8 +687,178 @@ export function registerRoutes(app: FastifyInstance): void {
         count: currentDup,
         top_clusters: topClusters,
       },
+      improvements: {
+        total: improvements.length,
+        used_count: usedImprove,
+        usage_rate: improveUsageRate,
+        avg_score_delta: avgImproveScoreDelta,
+        source_mix: {
+          llm: llmImproveCount,
+          heuristic: heuristicImproveCount,
+        },
+      },
       tips,
     });
+  });
+
+  app.post('/api/analytics/improve', async (request: FastifyRequest, reply: FastifyReply) => {
+    const body = request.body as {
+      prompt?: string;
+      conversation_id?: string;
+      provider?: ProviderName;
+      model?: string;
+      has_attachments?: boolean;
+      attachment_text_extracted?: boolean;
+    };
+
+    const prompt = (body.prompt || '').trim();
+    if (!prompt) {
+      return reply.status(400).send({ error: 'Prompt is required' });
+    }
+
+    const conversationId = body.conversation_id;
+    const previousPromptInputs: Array<{ content: string; clusterId?: string | null }> = [];
+
+    try {
+      if (conversationId) {
+        const previousMessages = queries.getMessages(conversationId).filter((msg) => msg.role === 'user');
+        const previousPromptAnalytics = queries.listPromptAnalytics(500, conversationId);
+        const analyticsByMessageId = new Map(
+          previousPromptAnalytics.map((item) => [item.message_id, item])
+        );
+
+        for (const msg of previousMessages) {
+          const analytics = analyticsByMessageId.get(msg.id);
+          previousPromptInputs.push({
+            content: msg.content,
+            clusterId: analytics?.duplicate_cluster_id || msg.id,
+          });
+        }
+      }
+
+      const config = loadConfig();
+      const selectedProvider = body.provider || getDefaultProvider(config);
+      let improvedPrompt = '';
+      let source: 'llm' | 'heuristic' = 'heuristic';
+
+      if (selectedProvider) {
+        try {
+          const providerConfig = config.providers[selectedProvider] || {};
+          const refiner = createProvider(selectedProvider, providerConfig);
+          const activeModel = body.model || refiner.defaultModel;
+
+          const recentContext = conversationId
+            ? queries.getMessages(conversationId)
+                .slice(-6)
+                .map((msg) => `${msg.role}: ${msg.content}`)
+                .join('\n')
+            : '';
+
+          const refineResponse = await refiner.chat({
+            messages: [
+              {
+                role: 'system',
+                content:
+                  'You are OpenGauge Prompt Refiner. Rewrite the user prompt to improve clarity and usefulness while preserving intent. Do not add placeholders like [Add context]. Do not add greetings, markdown headers, emojis, or explanations. Output ONLY the improved prompt text.',
+              },
+              {
+                role: 'user',
+                content: `Original prompt:\n${prompt}\n\nRecent context (optional):\n${recentContext || 'none'}\n\nReturn only refined prompt. Keep it concise and actionable.`,
+              },
+            ],
+            model: activeModel,
+            maxTokens: 260,
+            temperature: 0.2,
+          });
+
+          improvedPrompt = sanitizeAssistantText(refineResponse.content || '')
+            .replace(/^['"`]|['"`]$/g, '')
+            .trim();
+
+          if (improvedPrompt) {
+            source = 'llm';
+          }
+        } catch {
+          // fall back to heuristic below
+        }
+      }
+
+      if (!improvedPrompt) {
+        improvedPrompt = improvePrompt(prompt, previousPromptInputs, {
+          hasAttachments: Boolean(body.has_attachments),
+          attachmentTextExtracted: Boolean(body.attachment_text_extracted),
+        }).improvedPrompt;
+        source = 'heuristic';
+      }
+
+      if (!shouldUseImprovedPrompt(prompt, improvedPrompt)) {
+        improvedPrompt = prompt;
+      }
+
+      const result = buildPromptImprovementResult(prompt, improvedPrompt, previousPromptInputs, {
+        hasAttachments: Boolean(body.has_attachments),
+        attachmentTextExtracted: Boolean(body.attachment_text_extracted),
+      });
+
+      const saved = queries.insertPromptImprovement(
+        source,
+        result.originalPrompt,
+        result.improvedPrompt,
+        {
+          scoreBefore: result.before.scores.total,
+          scoreAfter: result.after.scores.total,
+          clarityDelta: result.benefit.clarityDelta,
+          duplicateRiskDelta: result.benefit.duplicateRiskDelta,
+          tokenSentDelta: result.benefit.tokenSentDelta,
+          scoreDelta: result.benefit.scoreDelta,
+        },
+        conversationId
+      );
+
+      return reply.send({
+        improvement_id: saved.id,
+        source,
+        original_prompt: result.originalPrompt,
+        improved_prompt: result.improvedPrompt,
+        before: result.before,
+        after: result.after,
+        benefit: result.benefit,
+      });
+    } catch (err: any) {
+      const fallback = improvePrompt(prompt, previousPromptInputs, {
+        hasAttachments: Boolean(body.has_attachments),
+        attachmentTextExtracted: Boolean(body.attachment_text_extracted),
+      });
+
+      const safeImprovedPrompt = shouldUseImprovedPrompt(prompt, fallback.improvedPrompt)
+        ? fallback.improvedPrompt
+        : prompt;
+
+      const safeFallback = buildPromptImprovementResult(prompt, safeImprovedPrompt, previousPromptInputs, {
+        hasAttachments: Boolean(body.has_attachments),
+        attachmentTextExtracted: Boolean(body.attachment_text_extracted),
+      });
+
+      return reply.send({
+        source: 'heuristic',
+        warning: `Improve fallback used: ${err?.message || 'unknown error'}`,
+        original_prompt: safeFallback.originalPrompt,
+        improved_prompt: safeFallback.improvedPrompt,
+        before: safeFallback.before,
+        after: safeFallback.after,
+        benefit: safeFallback.benefit,
+      });
+    }
+  });
+
+  app.post('/api/analytics/improve/use', async (request: FastifyRequest, reply: FastifyReply) => {
+    const body = request.body as { improvement_id?: string };
+    if (!body.improvement_id) {
+      return reply.status(400).send({ error: 'improvement_id is required' });
+    }
+
+    queries.markPromptImprovementUsed(body.improvement_id);
+    return reply.send({ success: true });
   });
 
   // ========== CONFIG ==========
