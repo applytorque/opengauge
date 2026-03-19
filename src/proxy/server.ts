@@ -123,10 +123,12 @@ export function startWatchProxy(options: WatchOptions): http.Server {
     // Forward to upstream
     const upstreamUrl = new URL(req.url || '/', provider.upstreamBase);
 
-    // Build upstream headers (pass through, removing host)
+    // Build upstream headers (pass through, removing host and accept-encoding)
+    // We strip accept-encoding so the upstream returns uncompressed responses
+    // that we can parse for usage/cost logging before forwarding to the client.
     const upstreamHeaders: Record<string, string> = {};
     for (const [key, val] of Object.entries(req.headers)) {
-      if (key === 'host' || key === 'connection') continue;
+      if (key === 'host' || key === 'connection' || key === 'accept-encoding') continue;
       if (key.startsWith('x-opengauge-')) continue; // Strip our custom headers
       if (val) upstreamHeaders[key] = Array.isArray(val) ? val[0] : val;
     }
