@@ -76,6 +76,48 @@ npm start            # Run CLI entry locally
 npm pack --dry-run   # Preview npm package contents
 ```
 
+## Competitors and positioning
+
+OpenGauge sits between chat UIs and full LLM observability suites.
+
+### PromptOps / Observability tools
+
+Examples: PromptLayer, Helicone, Langfuse, Humanloop, Arize Phoenix
+
+- Great at: traces, eval pipelines, team dashboards, observability depth.
+- OpenGauge advantage: local-first workflow, in-chat prompt improvement, duplicate-risk + token-efficiency feedback in one loop.
+
+### Multi-model chat interfaces
+
+Examples: LibreChat, Open WebUI, Chatbot UI, AnythingLLM
+
+- Great at: broad chat UX and plugin ecosystems.
+- OpenGauge advantage: prompt quality optimization is first-class (Improve + analytics), not only chat.
+
+### IDE coding assistants
+
+Examples: Continue and other IDE-native AI assistants
+
+- Great at: deep coding workflows inside editors.
+- OpenGauge advantage: model-agnostic PromptOps for any user (product, ops, research, support), not just coding.
+
+### Cloud model platforms
+
+Examples: Azure AI Studio, Vertex AI, Bedrock consoles
+
+- Great at: enterprise governance and managed cloud workflows.
+- OpenGauge advantage: fast setup, no cloud lock-in, supports local Ollama and cloud providers together.
+
+### Why choose OpenGauge
+
+- Improve prompts before send (optional Auto Improve mode)
+- Measure quality, duplicates, and token efficiency after send
+- Keep data local with SQLite and run quickly with `npx opengauge`
+
+Positioning line:
+
+> OpenGauge is PromptOps in the loop: improve prompt quality before send, measure impact after send, and reduce token waste continuously.
+
 ## License
 
 MIT
