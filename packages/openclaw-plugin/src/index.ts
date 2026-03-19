@@ -1,94 +1,295 @@
 /**
- * @applytorque/openclaw-plugin
+ * @opengauge/openclaw-plugin
  *
- * OpenClaw plugin that wraps every LLM provider call via registerProvider,
+ * OpenClaw plugin that observes every LLM call via hooks (llm_input / llm_output),
  * logging every individual API call to @opengauge/core's SQLite database.
  *
  * Features:
  *   - Per-call cost tracking
- *   - Runaway loop detection (circuit breaker)
- *   - Budget enforcement (session/daily/monthly)
+ *   - Runaway loop detection (circuit breaker alerts)
+ *   - Budget enforcement alerts (session/daily/monthly)
  *   - Fail-safe: never crashes the agent
  *
- * Install: openclaw plugins install @applytorque/openclaw-plugin
+ * Install: openclaw plugins install @opengauge/openclaw-plugin
  */
 
-import { getDb, initSchema, SessionQueries } from 'opengauge/core';
-import { WrappedProvider, type OpenClawProvider } from './wrapped-provider';
-import { loadPluginConfig, logError } from './config';
+import { getDb, initSchema, SessionQueries, calculateCost, checkRunawayLoop } from 'opengauge/core';
+import type { Interaction } from 'opengauge/core';
+import { loadPluginConfig, logError, type OpenClawPluginConfig } from './config';
 
-/**
- * OpenClaw plugin API interface (minimal — matches registerProvider + registerCommand).
- */
-interface OpenClawPluginAPI {
-  registerProvider(provider: any): void;
-  registerCommand?(name: string, handler: (args: string[]) => Promise<string | void>): void;
-  getProvider?(): OpenClawProvider;
-  on?(event: string, handler: (...args: any[]) => void): void;
+/* ------------------------------------------------------------------ */
+/*  OpenClaw Plugin API types (matches what register() actually gets) */
+/* ------------------------------------------------------------------ */
+
+interface HookContext {
+  agentId?: string;
+  sessionKey?: string;
+  sessionId?: string;
+  workspaceDir?: string;
+  [key: string]: any;
 }
 
-let wrappedProvider: WrappedProvider | null = null;
+interface LlmInputEvent {
+  runId: string;
+  sessionId?: string;
+  provider: string;
+  model: string;
+  systemPrompt?: string;
+  prompt: string;
+  historyMessages?: Array<{ role: string; content: string }>;
+  imagesCount?: number;
+}
 
-/**
- * Plugin entry point — called by OpenClaw when the plugin is loaded.
- */
+interface LlmOutputEvent {
+  runId: string;
+  sessionId?: string;
+  provider: string;
+  model: string;
+  assistantTexts?: string[];
+  lastAssistant?: any;
+  usage?: {
+    input?: number;
+    output?: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+    total?: number;
+    // fallback names used by other providers
+    input_tokens?: number;
+    output_tokens?: number;
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    [key: string]: any;
+  };
+}
+
+interface OpenClawPluginAPI {
+  on(hookName: string, handler: (...args: any[]) => void | Promise<void>, opts?: any): void;
+  registerCommand?(command: any): void;
+  registerProvider?(provider: any): void;
+  logger?: {
+    info(msg: string): void;
+    warn(msg: string): void;
+    error(msg: string): void;
+    debug(msg: string): void;
+  };
+  [key: string]: any;
+}
+
+/* ------------------------------------------------------------------ */
+/*  In-flight call tracking (correlate input → output by runId)       */
+/* ------------------------------------------------------------------ */
+
+interface InFlightCall {
+  runId: string;
+  provider: string;
+  model: string;
+  prompt: string;
+  startTime: number;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Session state                                                     */
+/* ------------------------------------------------------------------ */
+
+interface SessionState {
+  sessionId: string;
+  interactionCount: number;
+  runningCostUsd: number;
+  lastCallTimestamp: number;
+  recentInteractions: Interaction[];
+  contextDepthTokens: number;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Plugin core                                                       */
+/* ------------------------------------------------------------------ */
+
+let queries: SessionQueries | null = null;
+let config: OpenClawPluginConfig;
+let session: SessionState | null = null;
+const inFlight = new Map<string, InFlightCall>();
+
+function ensureSession(model: string, provider: string): SessionState {
+  const now = Date.now();
+
+  if (session && (now - session.lastCallTimestamp) > config.session_timeout_ms) {
+    try { queries?.finalizeSession(session.sessionId); } catch (e) { logError(e); }
+    session = null;
+  }
+
+  if (!session) {
+    try {
+      const record = queries!.createSession('openclaw', model, provider);
+      session = {
+        sessionId: record.id,
+        interactionCount: 0,
+        runningCostUsd: 0,
+        lastCallTimestamp: now,
+        recentInteractions: [],
+        contextDepthTokens: 0,
+      };
+    } catch (e) {
+      logError(e);
+      session = {
+        sessionId: `fallback-${now}`,
+        interactionCount: 0,
+        runningCostUsd: 0,
+        lastCallTimestamp: now,
+        recentInteractions: [],
+        contextDepthTokens: 0,
+      };
+    }
+  }
+
+  return session;
+}
+
+function runChecks(sess: SessionState, logger?: OpenClawPluginAPI['logger']): void {
+  // Circuit breaker (warn only — hooks can't block calls)
+  if (config.circuit_breaker.enabled) {
+    try {
+      const verdict = checkRunawayLoop(sess.recentInteractions, {
+        similarityThreshold: config.circuit_breaker.similarity_threshold,
+        tripPairCount: config.circuit_breaker.max_similar_calls,
+        warningPairCount: Math.max(2, config.circuit_breaker.max_similar_calls - 2),
+      });
+
+      if (verdict.verdict === 'trip' || verdict.verdict === 'warning') {
+        const severity = verdict.verdict === 'trip' ? 'critical' : 'warning';
+        const msg = verdict.verdict === 'trip'
+          ? `OpenGauge circuit breaker: ${verdict.reason}. Session cost: $${sess.runningCostUsd.toFixed(2)}.`
+          : `OpenGauge warning: ${verdict.reason}`;
+
+        queries?.writeAlert(sess.sessionId, 'runaway_loop', severity as any, msg, {
+          ...verdict,
+          sessionCost: sess.runningCostUsd,
+        });
+
+        if (logger) logger.warn(msg);
+      }
+    } catch (e) { logError(e); }
+  }
+
+  // Budget checks
+  try {
+    if (sess.runningCostUsd >= config.budget.session_limit_usd) {
+      const msg = `OpenGauge budget: Session cost ($${sess.runningCostUsd.toFixed(2)}) exceeds limit ($${config.budget.session_limit_usd.toFixed(2)}).`;
+      queries?.writeAlert(sess.sessionId, 'budget_breach', 'critical', msg, {
+        sessionCost: sess.runningCostUsd,
+        limit: config.budget.session_limit_usd,
+      });
+      if (logger) logger.warn(msg);
+    }
+
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const summary = queries?.getSpendSummary(todayStart.getTime(), 'openclaw');
+    if (summary && summary.total_cost_usd >= config.budget.daily_limit_usd) {
+      const msg = `OpenGauge budget: Daily spend ($${summary.total_cost_usd.toFixed(2)}) exceeds limit ($${config.budget.daily_limit_usd.toFixed(2)}).`;
+      queries?.writeAlert(sess.sessionId, 'budget_breach', 'critical', msg, {
+        dailyCost: summary.total_cost_usd,
+        limit: config.budget.daily_limit_usd,
+      });
+      if (logger) logger.warn(msg);
+    }
+  } catch (e) { logError(e); }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Plugin entry point                                                */
+/* ------------------------------------------------------------------ */
+
 export function register(api: OpenClawPluginAPI): void {
   try {
-    // Initialize database
     const db = getDb();
     initSchema(db);
+    queries = new SessionQueries(db);
+    config = loadPluginConfig();
 
-    const config = loadPluginConfig();
+    // --- llm_input: track when a call starts ---
+    api.on('llm_input', (event: LlmInputEvent, _ctx: HookContext) => {
+      try {
+        inFlight.set(event.runId, {
+          runId: event.runId,
+          provider: event.provider,
+          model: event.model,
+          prompt: event.prompt || '',
+          startTime: Date.now(),
+        });
+      } catch (e) { logError(e); }
+    });
 
-    // Get the current provider and wrap it
-    const realProvider = api.getProvider?.();
-    if (!realProvider) {
-      logError(new Error('OpenGauge: Could not get current provider from OpenClaw API'));
-      return;
-    }
+    // --- llm_output: log the completed call ---
+    api.on('llm_output', (event: LlmOutputEvent, _ctx: HookContext) => {
+      try {
 
-    wrappedProvider = new WrappedProvider(realProvider, config);
+        const call = inFlight.get(event.runId);
+        inFlight.delete(event.runId);
 
-    // Register the wrapped provider
-    api.registerProvider(wrappedProvider);
+        const provider = event.provider || call?.provider || 'unknown';
+        const model = event.model || call?.model || 'unknown';
+        const prompt = call?.prompt || '';
+        const startTime = call?.startTime || Date.now();
+        const latencyMs = Date.now() - startTime;
 
-    // Register optional stats command
-    if (api.registerCommand) {
-      api.registerCommand('opengauge-stats', async (args: string[]) => {
-        try {
-          const queries = new SessionQueries(getDb());
-          const summary = queries.getSpendSummary();
-          const alerts = queries.queryAlerts({ dismissed: false, limit: 5 });
+        const u = event.usage;
+        const tokensIn = (u?.input || 0) + (u?.cacheRead || 0) + (u?.cacheWrite || 0)
+          || u?.input_tokens || u?.prompt_tokens || 0;
+        const tokensOut = u?.output || u?.output_tokens || u?.completion_tokens || 0;
+        const costEstimate = calculateCost(provider, model, tokensIn, tokensOut);
 
-          const lines: string[] = [
-            '--- OpenGauge Stats ---',
-            `Sessions: ${summary.session_count}`,
-            `Total spend: $${summary.total_cost_usd.toFixed(4)}`,
-            `Tokens: ${summary.total_tokens_in.toLocaleString()} in / ${summary.total_tokens_out.toLocaleString()} out`,
-            `Tokens saved: ${summary.total_tokens_saved.toLocaleString()}`,
-          ];
+        const sess = ensureSession(model, provider);
+        sess.interactionCount++;
+        sess.runningCostUsd += costEstimate.totalCost;
+        sess.lastCallTimestamp = Date.now();
+        sess.contextDepthTokens += tokensIn;
 
-          if (alerts.length > 0) {
-            lines.push('', '--- Active Alerts ---');
-            for (const alert of alerts) {
-              lines.push(`[${alert.severity.toUpperCase()}] ${alert.alert_type}: ${alert.message}`);
-            }
-          }
+        const responseText = event.assistantTexts?.join('\n') || '';
 
-          return lines.join('\n');
-        } catch (e) {
-          logError(e);
-          return 'OpenGauge: Failed to fetch stats. Check ~/.opengauge/error.log';
+        sess.recentInteractions.push(
+          { role: 'user', content: prompt, timestamp: startTime },
+          { role: 'assistant', content: responseText, timestamp: Date.now() },
+        );
+        if (sess.recentInteractions.length > 40) {
+          sess.recentInteractions = sess.recentInteractions.slice(-40);
         }
-      });
-    }
 
-    // Listen for shutdown to finalize session
-    if (api.on) {
-      api.on('gateway_stop', () => {
-        wrappedProvider?.shutdown();
-      });
-    }
+        // Write interaction
+        queries?.writeInteraction(
+          sess.sessionId,
+          sess.interactionCount,
+          model,
+          {
+            originalPrompt: prompt,
+            responseText: config.log_response_text ? responseText : undefined,
+            tokensIn,
+            tokensOut,
+            costUsd: costEstimate.totalCost,
+            latencyMs,
+            contextDepthTokens: sess.contextDepthTokens,
+          },
+        );
+
+        // Update session aggregates
+        queries?.updateSessionAggregates(
+          sess.sessionId, tokensIn, tokensOut, costEstimate.totalCost,
+        );
+
+        // Run circuit breaker + budget checks
+        runChecks(sess, api.logger);
+
+      } catch (e) { logError(e); }
+    });
+
+    // --- gateway_stop: finalize session ---
+    api.on('gateway_stop', () => {
+      if (session) {
+        try { queries?.finalizeSession(session.sessionId); } catch (e) { logError(e); }
+        session = null;
+      }
+    });
+
+    api.logger?.info('OpenGauge plugin loaded — observing LLM calls');
 
   } catch (error) {
     // Fail-safe: plugin must never crash OpenClaw
@@ -100,9 +301,9 @@ export function register(api: OpenClawPluginAPI): void {
  * Plugin metadata for OpenClaw's plugin system.
  */
 export const metadata = {
-  name: '@applytorque/openclaw-plugin',
-  npm: '@applytorque/openclaw-plugin',
-  version: '0.1.0',
+  name: '@opengauge/openclaw-plugin',
+  npm: '@opengauge/openclaw-plugin',
+  version: '0.1.4',
   description: 'Cost tracking, runaway loop detection, and budget enforcement for OpenClaw agents',
   author: 'OpenGauge',
 };

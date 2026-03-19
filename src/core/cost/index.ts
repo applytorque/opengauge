@@ -28,8 +28,11 @@ export interface CostEstimate {
 
 const MODEL_PROFILES: ModelProfile[] = [
   // Anthropic
+  { provider: 'anthropic', model: 'claude-opus-4-6',               inputPricePer1M: 15,    outputPricePer1M: 75,    contextWindow: 200_000 },
   { provider: 'anthropic', model: 'claude-opus-4-20250514',        inputPricePer1M: 15,    outputPricePer1M: 75,    contextWindow: 200_000 },
+  { provider: 'anthropic', model: 'claude-sonnet-4-6',             inputPricePer1M: 3,     outputPricePer1M: 15,    contextWindow: 200_000 },
   { provider: 'anthropic', model: 'claude-sonnet-4-20250514',      inputPricePer1M: 3,     outputPricePer1M: 15,    contextWindow: 200_000 },
+  { provider: 'anthropic', model: 'claude-haiku-4-5',              inputPricePer1M: 0.80,  outputPricePer1M: 4,     contextWindow: 200_000 },
   { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022',    inputPricePer1M: 3,     outputPricePer1M: 15,    contextWindow: 200_000 },
   { provider: 'anthropic', model: 'claude-3-5-haiku-20241022',     inputPricePer1M: 0.80,  outputPricePer1M: 4,     contextWindow: 200_000 },
   { provider: 'anthropic', model: 'claude-3-haiku-20240307',       inputPricePer1M: 0.25,  outputPricePer1M: 1.25,  contextWindow: 200_000 },

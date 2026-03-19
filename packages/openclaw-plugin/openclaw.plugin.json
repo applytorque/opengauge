@@ -1,20 +1,20 @@
 {
-  "name": "@applytorque/openclaw-plugin",
-  "version": "0.1.0",
-  "description": "PromptOps observability for OpenClaw: per-call cost tracking, runaway loop detection, circuit breaker, and budget enforcement",
-  "author": "OpenGauge / Vega IoT",
-  "license": "MIT",
-  "entry": "dist/index.js",
-  "capabilities": ["registerProvider", "registerCommand"],
-  "config_schema": {
-    "circuit_breaker.enabled": { "type": "boolean", "default": true },
-    "circuit_breaker.similarity_threshold": { "type": "number", "default": 0.8 },
-    "circuit_breaker.max_similar_calls": { "type": "number", "default": 5 },
-    "circuit_breaker.action": { "type": "string", "enum": ["warn", "block"], "default": "warn" },
-    "budget.session_limit_usd": { "type": "number", "default": 5.0 },
-    "budget.daily_limit_usd": { "type": "number", "default": 20.0 },
-    "budget.monthly_limit_usd": { "type": "number", "default": 400.0 },
-    "optimize": { "type": "boolean", "default": false }
-  },
-  "keywords": ["observability", "cost-tracking", "circuit-breaker", "promptops"]
+  "id": "opengauge",
+  "name": "OpenGauge",
+  "description": "PromptOps observability: per-call cost tracking, runaway loop detection, circuit breaker, and budget enforcement",
+  "version": "0.1.2",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "circuit_breaker_enabled": { "type": "boolean" },
+      "circuit_breaker_similarity_threshold": { "type": "number" },
+      "circuit_breaker_max_similar_calls": { "type": "number" },
+      "circuit_breaker_action": { "type": "string", "enum": ["warn", "block"] },
+      "budget_session_limit_usd": { "type": "number" },
+      "budget_daily_limit_usd": { "type": "number" },
+      "budget_monthly_limit_usd": { "type": "number" },
+      "optimize": { "type": "boolean" }
+    }
+  }
 }

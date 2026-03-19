@@ -1,6 +1,6 @@
 {
   "name": "opengauge",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "A local-first, token-efficient LLM chat interface",
   "main": "dist/server/index.js",
   "exports": {

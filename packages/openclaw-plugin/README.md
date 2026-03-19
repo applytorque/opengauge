@@ -1,17 +1,17 @@
-# @applytorque/openclaw-plugin
+# @opengauge/openclaw-plugin
 
 PromptOps observability for [OpenClaw](https://openclaw.ai) agents. Wraps every LLM provider call via `registerProvider` to give you per-call cost tracking, runaway loop detection, circuit breaker protection, and budget enforcement — without modifying your agent.
 
 ## Install
 
 ```bash
-openclaw plugins install @applytorque/openclaw-plugin
+openclaw plugins install @opengauge/openclaw-plugin
 ```
 
 Or manually:
 
 ```bash
-npm install @applytorque/openclaw-plugin
+npm install @opengauge/openclaw-plugin
 ```
 
 ## What it does

@@ -1,6 +1,6 @@
 {
-  "name": "@applytorque/openclaw-plugin",
-  "version": "0.1.0",
+  "name": "@opengauge/openclaw-plugin",
+  "version": "0.1.5",
   "description": "PromptOps observability for OpenClaw: per-call cost tracking, runaway loop detection, circuit breaker, and budget enforcement",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -32,12 +32,17 @@
   },
   "dependencies": {
     "js-yaml": "^4.1.0",
-    "opengauge": "^0.2.2"
+    "opengauge": "^0.2.3"
   },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.13.0",
     "typescript": "^5.7.0"
+  },
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ]
   },
   "engines": {
     "node": ">=18"
