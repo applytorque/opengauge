@@ -1,8 +1,23 @@
 {
   "name": "opengauge",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "A local-first, token-efficient LLM chat interface",
   "main": "dist/server/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/server/index.d.ts",
+      "default": "./dist/server/index.js"
+    },
+    "./core": {
+      "types": "./dist/core/index.d.ts",
+      "default": "./dist/core/index.js"
+    }
+  },
+  "typesVersions": {
+    "*": {
+      "core": ["dist/core/index.d.ts"]
+    }
+  },
   "bin": {
     "opengauge": "bin/opengauge.js"
   },

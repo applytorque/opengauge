@@ -1,0 +1,45 @@
+{
+  "name": "@applytorque/openclaw-plugin",
+  "version": "0.1.0",
+  "description": "PromptOps observability for OpenClaw: per-call cost tracking, runaway loop detection, circuit breaker, and budget enforcement",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "rm -rf dist && tsc",
+    "prepack": "npm run build"
+  },
+  "files": [
+    "dist",
+    "openclaw.plugin.json",
+    "README.md"
+  ],
+  "keywords": [
+    "openclaw",
+    "opengauge",
+    "promptops",
+    "observability",
+    "cost-tracking",
+    "circuit-breaker",
+    "llm",
+    "ai-agent"
+  ],
+  "author": "OpenGauge / Vega IoT",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/applytorque/opengauge",
+    "directory": "packages/openclaw-plugin"
+  },
+  "dependencies": {
+    "js-yaml": "^4.1.0",
+    "opengauge": "^0.2.2"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^22.13.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -3,3 +3,5 @@ dist/
 *.db
 .opengauge/
 COMMAND.md
+docs
+docs/IMPLEMENT.md
