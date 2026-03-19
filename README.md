@@ -76,6 +76,16 @@ npm start            # Run CLI entry locally
 npm pack --dry-run   # Preview npm package contents
 ```
 
+## Using with OpenClaw
+
+OpenGauge has a native OpenClaw plugin for cost tracking, runaway loop detection, and budget enforcement inside your agents.
+
+```bash
+openclaw plugins install @opengauge/openclaw-plugin
+```
+
+See [docs/openclaw.md](docs/openclaw.md) for the full setup guide.
+
 ## Competitors and positioning
 
 OpenGauge sits between chat UIs and full LLM observability suites.
