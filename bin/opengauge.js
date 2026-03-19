@@ -115,7 +115,7 @@ async function main() {
   }
 
   console.log(`
-  ⚡ OpenGauge v0.1.6
+  ⚡ OpenGauge v0.2.0
   PromptOps observability platform
   `);
 
