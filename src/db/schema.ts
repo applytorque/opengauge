@@ -143,6 +143,93 @@ export function initSchema(db: Database.Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_prompt_improvements_conversation
       ON prompt_improvements(conversation_id, created_at);
+
+    -- ================================================================
+    -- Phase 2-4 tables: multi-source sessions, interactions, alerts
+    -- ================================================================
+
+    -- Sessions (multi-source: chat, openclaw, proxy, log_ingest)
+    CREATE TABLE IF NOT EXISTS sessions (
+      id                TEXT PRIMARY KEY,
+      source            TEXT NOT NULL CHECK (source IN ('chat', 'openclaw', 'proxy', 'log_ingest')),
+      model             TEXT NOT NULL,
+      provider          TEXT NOT NULL,
+      project_dir       TEXT,
+      started_at        INTEGER NOT NULL,
+      ended_at          INTEGER,
+      total_tokens_in   INTEGER NOT NULL DEFAULT 0,
+      total_tokens_out  INTEGER NOT NULL DEFAULT 0,
+      total_cost_usd    REAL NOT NULL DEFAULT 0,
+      tokens_saved      INTEGER NOT NULL DEFAULT 0,
+      cost_saved_usd    REAL NOT NULL DEFAULT 0,
+      interaction_count INTEGER NOT NULL DEFAULT 0,
+      metadata          TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_sessions_source
+      ON sessions(source, started_at);
+
+    CREATE INDEX IF NOT EXISTS idx_sessions_started
+      ON sessions(started_at);
+
+    -- Interactions (individual API calls within a session)
+    CREATE TABLE IF NOT EXISTS interactions (
+      id                   TEXT PRIMARY KEY,
+      session_id           TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      sequence_num         INTEGER NOT NULL,
+      timestamp            INTEGER NOT NULL,
+      original_prompt      TEXT,
+      optimized_prompt     TEXT,
+      response_text        TEXT,
+      tokens_in            INTEGER NOT NULL DEFAULT 0,
+      tokens_out           INTEGER NOT NULL DEFAULT 0,
+      cost_usd             REAL NOT NULL DEFAULT 0,
+      latency_ms           INTEGER,
+      optimization_delta   REAL NOT NULL DEFAULT 0,
+      context_depth_tokens INTEGER NOT NULL DEFAULT 0,
+      model                TEXT NOT NULL,
+      metadata             TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_interactions_session
+      ON interactions(session_id, sequence_num);
+
+    CREATE INDEX IF NOT EXISTS idx_interactions_timestamp
+      ON interactions(timestamp);
+
+    -- Alerts (circuit breaker, degradation, cost spikes)
+    CREATE TABLE IF NOT EXISTS alerts (
+      id              TEXT PRIMARY KEY,
+      session_id      TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      interaction_id  TEXT REFERENCES interactions(id) ON DELETE SET NULL,
+      alert_type      TEXT NOT NULL CHECK (alert_type IN ('degradation', 'runaway_loop', 'cost_spike', 'stale_context', 'budget_breach')),
+      severity        TEXT NOT NULL CHECK (severity IN ('info', 'warning', 'critical')),
+      message         TEXT NOT NULL,
+      data            TEXT,
+      created_at      INTEGER NOT NULL,
+      dismissed       INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_alerts_session
+      ON alerts(session_id, created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_alerts_type
+      ON alerts(alert_type, created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_alerts_dismissed
+      ON alerts(dismissed, created_at);
+
+    -- Model profiles (persisted pricing/config)
+    CREATE TABLE IF NOT EXISTS model_profiles (
+      model_id           TEXT PRIMARY KEY,
+      provider           TEXT NOT NULL,
+      cost_per_1m_in     REAL NOT NULL DEFAULT 0,
+      cost_per_1m_out    REAL NOT NULL DEFAULT 0,
+      max_context        INTEGER,
+      preferred_format   TEXT,
+      optimization_rules TEXT,
+      updated_at         INTEGER NOT NULL
+    );
   `);
 
   // Try creating the embeddings virtual table (requires sqlite-vec)

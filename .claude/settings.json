@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install:*)",
+      "Bash(npm ls:*)",
+      "Bash(node -e \":*)",
+      "Bash(node bin/opengauge.js --help)",
+      "Bash(timeout 3 node -e \":*)"
+    ]
+  }
+}

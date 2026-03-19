@@ -1,0 +1,20 @@
+{
+  "name": "@opengauge/openclaw-plugin",
+  "version": "0.1.0",
+  "description": "PromptOps observability for OpenClaw: per-call cost tracking, runaway loop detection, circuit breaker, and budget enforcement",
+  "author": "OpenGauge / Vega IoT",
+  "license": "MIT",
+  "entry": "index.js",
+  "capabilities": ["registerProvider", "registerCommand"],
+  "config_schema": {
+    "circuit_breaker.enabled": { "type": "boolean", "default": true },
+    "circuit_breaker.similarity_threshold": { "type": "number", "default": 0.8 },
+    "circuit_breaker.max_similar_calls": { "type": "number", "default": 5 },
+    "circuit_breaker.action": { "type": "string", "enum": ["warn", "block"], "default": "warn" },
+    "budget.session_limit_usd": { "type": "number", "default": 5.0 },
+    "budget.daily_limit_usd": { "type": "number", "default": 20.0 },
+    "budget.monthly_limit_usd": { "type": "number", "default": 400.0 },
+    "optimize": { "type": "boolean", "default": false }
+  },
+  "keywords": ["observability", "cost-tracking", "circuit-breaker", "promptops"]
+}
