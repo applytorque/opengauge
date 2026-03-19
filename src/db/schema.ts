@@ -184,6 +184,8 @@ export function initSchema(db: Database.Database): void {
       tokens_in            INTEGER NOT NULL DEFAULT 0,
       tokens_out           INTEGER NOT NULL DEFAULT 0,
       cost_usd             REAL NOT NULL DEFAULT 0,
+      upstream_status_code INTEGER,
+      upstream_error       TEXT,
       latency_ms           INTEGER,
       optimization_delta   REAL NOT NULL DEFAULT 0,
       context_depth_tokens INTEGER NOT NULL DEFAULT 0,
@@ -247,5 +249,20 @@ export function initSchema(db: Database.Database): void {
     `);
   } catch {
     // sqlite-vec not available — skip
+  }
+
+  // Lightweight migrations for existing DBs.
+  try {
+    const columns = db.prepare(`PRAGMA table_info(interactions)`).all() as Array<{ name: string }>;
+    const names = new Set(columns.map((c) => c.name));
+
+    if (!names.has('upstream_status_code')) {
+      db.exec(`ALTER TABLE interactions ADD COLUMN upstream_status_code INTEGER`);
+    }
+    if (!names.has('upstream_error')) {
+      db.exec(`ALTER TABLE interactions ADD COLUMN upstream_error TEXT`);
+    }
+  } catch {
+    // Ignore migration issues to avoid blocking startup.
   }
 }
