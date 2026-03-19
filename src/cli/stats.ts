@@ -20,6 +20,7 @@ export interface StatsOptions {
   alerts?: boolean;      // show alerts only
   json?: boolean;        // machine-readable JSON output
   compare?: boolean;     // show optimization comparison
+  help?: boolean;        // show command help
 }
 
 export function parseStatsArgs(args: string[]): StatsOptions {
@@ -31,8 +32,32 @@ export function parseStatsArgs(args: string[]): StatsOptions {
     else if (arg === '--alerts') opts.alerts = true;
     else if (arg === '--json') opts.json = true;
     else if (arg === '--compare') opts.compare = true;
+    else if (arg === '--help' || arg === '-h') opts.help = true;
   }
   return opts;
+}
+
+function printStatsHelp(): void {
+  console.log(`
+  OpenGauge Stats — Terminal analytics dashboard
+
+  Usage:
+    npx opengauge stats [options]
+
+  Options:
+    --period=<N>d|h|w|m   Time period (e.g. 7d, 24h, 4w)
+    --model=<name>        Filter by model
+    --source=<name>       Filter by source (chat, openclaw, proxy)
+    --alerts              Show active alerts only
+    --json                Machine-readable JSON output
+    --compare             Show optimization comparison
+    --help, -h            Show this help message
+
+  Examples:
+    npx opengauge stats
+    npx opengauge stats --period=7d --source=proxy
+    npx opengauge stats --json
+  `);
 }
 
 function parsePeriod(period?: string): number | undefined {
@@ -70,6 +95,12 @@ function formatDuration(startMs: number, endMs: number | null): string {
 
 export async function runStats(args: string[]): Promise<void> {
   const opts = parseStatsArgs(args);
+
+  if (opts.help) {
+    printStatsHelp();
+    return;
+  }
+
   const db = getDb();
   const sq = new SessionQueries(db);
   const since = parsePeriod(opts.period);

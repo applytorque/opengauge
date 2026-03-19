@@ -223,6 +223,7 @@ async function handleStandardRequest(
   recentBySession: Map<string, Interaction[]>
 ): Promise<void> {
   const upstreamRes = await makeUpstreamRequest(upstreamUrl, headers, body, method);
+  const statusCode = upstreamRes.statusCode || 200;
 
   const chunks: Buffer[] = [];
   upstreamRes.on('data', (chunk) => chunks.push(chunk));
@@ -234,7 +235,7 @@ async function handleStandardRequest(
 
   // Forward response to client
   const responseHeaders = { ...upstreamRes.headers };
-  clientRes.writeHead(upstreamRes.statusCode || 200, responseHeaders);
+  clientRes.writeHead(statusCode, responseHeaders);
   clientRes.end(responseBody);
 
   // Log the interaction
@@ -245,6 +246,7 @@ async function handleStandardRequest(
     const usage = extractUsage(providerName, parsed);
     const responseText = extractResponseText(providerName, parsed);
     const cost = calculateCost(providerName, model, usage.tokensIn, usage.tokensOut);
+    const upstreamError = extractUpstreamError(statusCode, parsed, responseBody);
 
     const seqNum = sessionMgr.recordInteraction(
       { 'x-opengauge-session': sessionId } as any,
@@ -257,6 +259,8 @@ async function handleStandardRequest(
       tokensIn: usage.tokensIn,
       tokensOut: usage.tokensOut,
       costUsd: cost.totalCost,
+      upstreamStatusCode: statusCode,
+      upstreamError,
       latencyMs,
     });
 
@@ -289,20 +293,24 @@ async function handleStreamingRequest(
   recentBySession: Map<string, Interaction[]>
 ): Promise<void> {
   const upstreamRes = await makeUpstreamRequest(upstreamUrl, headers, body, method);
+  const statusCode = upstreamRes.statusCode || 200;
 
   // Forward headers immediately for streaming
   const responseHeaders = { ...upstreamRes.headers };
-  clientRes.writeHead(upstreamRes.statusCode || 200, responseHeaders);
+  clientRes.writeHead(statusCode, responseHeaders);
 
   // Buffer SSE data for logging while streaming through
   let fullContent = '';
   let tokensIn = 0;
   let tokensOut = 0;
   let rawBuffer = '';
+  let rawResponse = '';
 
   upstreamRes.on('data', (chunk: Buffer) => {
     // Forward to client immediately
     clientRes.write(chunk);
+
+    rawResponse += chunk.toString('utf-8');
 
     // Buffer for parsing
     rawBuffer += chunk.toString('utf-8');
@@ -353,6 +361,8 @@ async function handleStreamingRequest(
   try {
     const latencyMs = Date.now() - startTime;
     const cost = calculateCost(providerName, model, tokensIn, tokensOut);
+    const parsedResponse = tryParseJson(rawResponse);
+    const upstreamError = extractUpstreamError(statusCode, parsedResponse, rawResponse);
 
     const seqNum = sessionMgr.recordInteraction(
       { 'x-opengauge-session': sessionId } as any,
@@ -365,6 +375,8 @@ async function handleStreamingRequest(
       tokensIn,
       tokensOut,
       costUsd: cost.totalCost,
+      upstreamStatusCode: statusCode,
+      upstreamError,
       latencyMs,
     });
 
@@ -377,4 +389,32 @@ async function handleStreamingRequest(
     if (recent.length > 40) recent.splice(0, recent.length - 40);
     recentBySession.set(sessionId, recent);
   } catch { /* non-blocking logging */ }
+}
+
+function tryParseJson(raw: string): any {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function extractUpstreamError(statusCode: number, parsedBody: any, rawBody: string): string | undefined {
+  if (statusCode < 400) return undefined;
+
+  if (typeof parsedBody?.error === 'string' && parsedBody.error.trim()) {
+    return parsedBody.error.trim().slice(0, 2000);
+  }
+  if (typeof parsedBody?.error?.message === 'string' && parsedBody.error.message.trim()) {
+    return parsedBody.error.message.trim().slice(0, 2000);
+  }
+  if (typeof parsedBody?.message === 'string' && parsedBody.message.trim()) {
+    return parsedBody.message.trim().slice(0, 2000);
+  }
+
+  const compactRaw = rawBody.trim();
+  if (compactRaw) return compactRaw.slice(0, 2000);
+
+  return `Upstream returned HTTP ${statusCode}`;
 }

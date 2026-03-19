@@ -31,6 +31,8 @@ export interface InteractionRecord {
   tokens_in: number;
   tokens_out: number;
   cost_usd: number;
+  upstream_status_code: number | null;
+  upstream_error: string | null;
   latency_ms: number | null;
   optimization_delta: number;
   context_depth_tokens: number;
@@ -151,9 +153,9 @@ export class SessionQueries {
     this.stmtInsertInteraction = db.prepare(`
       INSERT INTO interactions (
         id, session_id, sequence_num, timestamp, original_prompt, optimized_prompt,
-        response_text, tokens_in, tokens_out, cost_usd, latency_ms,
+        response_text, tokens_in, tokens_out, cost_usd, upstream_status_code, upstream_error, latency_ms,
         optimization_delta, context_depth_tokens, model, metadata
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     this.stmtGetInteractions = db.prepare(`
@@ -288,6 +290,8 @@ export class SessionQueries {
       tokensIn?: number;
       tokensOut?: number;
       costUsd?: number;
+      upstreamStatusCode?: number;
+      upstreamError?: string;
       latencyMs?: number;
       optimizationDelta?: number;
       contextDepthTokens?: number;
@@ -308,6 +312,8 @@ export class SessionQueries {
       opts.tokensIn || 0,
       opts.tokensOut || 0,
       opts.costUsd || 0,
+      opts.upstreamStatusCode || null,
+      opts.upstreamError || null,
       opts.latencyMs || null,
       opts.optimizationDelta || 0,
       opts.contextDepthTokens || 0,
@@ -324,6 +330,8 @@ export class SessionQueries {
       tokens_in: opts.tokensIn || 0,
       tokens_out: opts.tokensOut || 0,
       cost_usd: opts.costUsd || 0,
+      upstream_status_code: opts.upstreamStatusCode || null,
+      upstream_error: opts.upstreamError || null,
       latency_ms: opts.latencyMs || null,
       optimization_delta: opts.optimizationDelta || 0,
       context_depth_tokens: opts.contextDepthTokens || 0,
