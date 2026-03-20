@@ -291,10 +291,66 @@ export function register(api: OpenClawPluginAPI): void {
 
     api.logger?.info('OpenGauge plugin loaded — observing LLM calls');
 
+    // Non-blocking update check
+    checkForUpdate(api.logger).catch(() => {});
+
   } catch (error) {
     // Fail-safe: plugin must never crash OpenClaw
     logError(error);
   }
+}
+
+/**
+ * Check npm registry for a newer version and log a message if available.
+ */
+async function checkForUpdate(logger?: OpenClawPluginAPI['logger']): Promise<void> {
+  try {
+    const https = await import('https');
+    const data = await new Promise<string>((resolve, reject) => {
+      const req = https.get(
+        'https://registry.npmjs.org/@opengauge/openclaw-plugin/latest',
+        { headers: { 'accept': 'application/json' }, timeout: 5000 },
+        (res) => {
+          if (res.statusCode !== 200) { resolve(''); return; }
+          const chunks: Buffer[] = [];
+          res.on('data', (c: Buffer) => chunks.push(c));
+          res.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
+        }
+      );
+      req.on('error', () => resolve(''));
+      req.on('timeout', () => { req.destroy(); resolve(''); });
+    });
+
+    if (!data) return;
+    const pkg = JSON.parse(data);
+    const latest = pkg.version;
+    if (!latest) return;
+
+    const current = metadata.version;
+    if (latest !== current && compareVersions(latest, current) > 0) {
+      const msg = `OpenGauge update available: ${current} → ${latest}. Run: openclaw plugins install @opengauge/openclaw-plugin`;
+      if (logger) {
+        logger.warn(msg);
+      } else {
+        console.warn(`[opengauge] ${msg}`);
+      }
+    }
+  } catch {
+    // Non-blocking — never fail on update check
+  }
+}
+
+/**
+ * Simple semver comparison. Returns >0 if a > b.
+ */
+function compareVersions(a: string, b: string): number {
+  const pa = a.split('.').map(Number);
+  const pb = b.split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    const diff = (pa[i] || 0) - (pb[i] || 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
 }
 
 /**
@@ -303,7 +359,7 @@ export function register(api: OpenClawPluginAPI): void {
 export const metadata = {
   name: '@opengauge/openclaw-plugin',
   npm: '@opengauge/openclaw-plugin',
-  version: '0.1.4',
+  version: '0.1.6',
   description: 'Cost tracking, runaway loop detection, and budget enforcement for OpenClaw agents',
   author: 'OpenGauge',
 };
