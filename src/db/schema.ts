@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { calculateCost } from '../core/cost';
 
 export function initSchema(db: Database.Database): void {
   db.exec(`
@@ -264,5 +265,40 @@ export function initSchema(db: Database.Database): void {
     }
   } catch {
     // Ignore migration issues to avoid blocking startup.
+  }
+
+  // Backfill: recalculate cost for interactions that have tokens but $0 cost
+  // (caused by earlier gzip/token-extraction bugs)
+  try {
+    const broken = db.prepare(`
+      SELECT i.id, i.tokens_in, i.tokens_out, i.model, s.provider, i.session_id
+      FROM interactions i
+      JOIN sessions s ON i.session_id = s.id
+      WHERE i.tokens_in > 0 AND i.cost_usd = 0
+    `).all() as Array<{ id: string; tokens_in: number; tokens_out: number; model: string; provider: string; session_id: string }>;
+
+    if (broken.length > 0) {
+      const updateInteraction = db.prepare(`UPDATE interactions SET cost_usd = ? WHERE id = ?`);
+      const updateSession = db.prepare(`
+        UPDATE sessions SET total_cost_usd = (
+          SELECT COALESCE(SUM(cost_usd), 0) FROM interactions WHERE session_id = sessions.id
+        ) WHERE id = ?
+      `);
+
+      const affectedSessions = new Set<string>();
+      const backfill = db.transaction(() => {
+        for (const row of broken) {
+          const cost = calculateCost(row.provider, row.model, row.tokens_in, row.tokens_out);
+          updateInteraction.run(cost.totalCost, row.id);
+          affectedSessions.add(row.session_id);
+        }
+        for (const sid of affectedSessions) {
+          updateSession.run(sid);
+        }
+      });
+      backfill();
+    }
+  } catch {
+    // Non-blocking: don't break startup if backfill fails
   }
 }

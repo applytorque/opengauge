@@ -7,6 +7,11 @@ import { initSchema } from './schema';
 let db: Database.Database | null = null;
 
 export function getDbPath(): string {
+  if (process.env.OPENGAUGE_DB_PATH) {
+    const dir = path.dirname(process.env.OPENGAUGE_DB_PATH);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    return process.env.OPENGAUGE_DB_PATH;
+  }
   const dir = path.join(os.homedir(), '.opengauge');
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });

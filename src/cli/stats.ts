@@ -10,6 +10,7 @@ import Table from 'cli-table3';
 import { getDb } from '../db';
 import { SessionQueries } from '../db/session-queries';
 import { Queries } from '../db/queries';
+import { initPricing } from '../core/cost/pricing-loader';
 
 // ---- Argument parsing ----
 
@@ -102,6 +103,7 @@ export async function runStats(args: string[]): Promise<void> {
   }
 
   const db = getDb();
+  initPricing(db);
   const sq = new SessionQueries(db);
   const since = parsePeriod(opts.period);
 
@@ -281,11 +283,21 @@ export async function runStats(args: string[]): Promise<void> {
 // ---- JSON output ----
 
 function runStatsJson(sq: SessionQueries, opts: StatsOptions, since?: number): void {
-  const output: any = {
+  const days = opts.period ? parseInt(opts.period) || 7 : 30;
+  const output = {
+    meta: {
+      version: '0.2.5',
+      generatedAt: new Date().toISOString(),
+      filters: {
+        period: opts.period || null,
+        model: opts.model || null,
+        source: opts.source || null,
+      },
+    },
     summary: sq.getSpendSummary(since, opts.source),
-    models: sq.getModelUsage(since),
-    daily: sq.getDailySpend(7),
-    topSessions: sq.getTopSessionsByCost(5, since),
+    models: sq.getModelUsage(since, opts.source),
+    daily: sq.getDailySpend(days),
+    topSessions: sq.getTopSessionsByCost(10, since, opts.source),
     alerts: sq.queryAlerts({ dismissed: false, limit: 20, since }),
     alertSummary: sq.getAlertSummary(since),
   };

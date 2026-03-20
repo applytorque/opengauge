@@ -459,10 +459,18 @@ export class SessionQueries {
     return row;
   }
 
-  getModelUsage(since?: number): ModelUsage[] {
+  getModelUsage(since?: number, source?: string): ModelUsage[] {
+    const conditions: string[] = [];
     const params: any[] = [];
-    const where = since ? 'WHERE started_at >= ?' : '';
-    if (since) params.push(since);
+    if (since) {
+      conditions.push('started_at >= ?');
+      params.push(since);
+    }
+    if (source) {
+      conditions.push('source = ?');
+      params.push(source);
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
     return this.db.prepare(`
       SELECT
@@ -479,10 +487,18 @@ export class SessionQueries {
     `).all(...params) as ModelUsage[];
   }
 
-  getTopSessionsByCost(limit: number = 5, since?: number): SessionRecord[] {
+  getTopSessionsByCost(limit: number = 5, since?: number, source?: string): SessionRecord[] {
+    const conditions: string[] = [];
     const params: any[] = [];
-    const where = since ? 'WHERE started_at >= ?' : '';
-    if (since) params.push(since);
+    if (since) {
+      conditions.push('started_at >= ?');
+      params.push(since);
+    }
+    if (source) {
+      conditions.push('source = ?');
+      params.push(source);
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
     return this.db.prepare(`
       SELECT * FROM sessions ${where}

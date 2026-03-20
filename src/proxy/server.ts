@@ -16,6 +16,7 @@ import { getDb } from '../db';
 import { initSchema } from '../db/schema';
 import { SessionQueries } from '../db/session-queries';
 import { calculateCost } from '../core/cost';
+import { initPricing } from '../core/cost/pricing-loader';
 import { checkRunawayLoop, type Interaction } from '../core/circuit-breaker';
 import { detectProvider, extractModel, extractUsage, extractResponseText } from './providers';
 import { ProxySessionManager } from './session-manager';
@@ -29,6 +30,7 @@ export interface WatchOptions {
 export function startWatchProxy(options: WatchOptions): http.Server {
   const db = getDb();
   initSchema(db);
+  initPricing(db);
   const sq = new SessionQueries(db);
   const sessionMgr = new ProxySessionManager();
 

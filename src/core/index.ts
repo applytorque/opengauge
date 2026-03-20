@@ -46,6 +46,15 @@ export {
   type CostEstimate,
 } from './cost';
 
+// ---- Dynamic pricing ----
+export {
+  initPricing,
+  fetchRemotePricing,
+  cachePricingToDb,
+  loadBundledPricing,
+  loadUserPricingOverrides,
+} from './cost/pricing-loader';
+
 // ---- Circuit breaker ----
 export {
   checkRunawayLoop,

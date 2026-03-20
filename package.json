@@ -1,6 +1,6 @@
 {
   "name": "opengauge",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "A local-first, token-efficient LLM chat interface",
   "main": "dist/server/index.js",
   "exports": {
@@ -25,11 +25,13 @@
     "build": "rm -rf dist && tsc && mkdir -p dist/ui && cp -r src/ui/static dist/ui/static",
     "prepack": "npm run build",
     "start": "node bin/opengauge.js",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "test": "npm run build && node --test dist/test/**/*.test.js"
   },
   "files": [
     "bin",
     "dist",
+    "pricing.json",
     "README.md"
   ],
   "keywords": [

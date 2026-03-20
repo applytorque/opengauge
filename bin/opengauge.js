@@ -21,6 +21,77 @@ async function main() {
     return;
   }
 
+  // ---- pricing command ----
+  if (command === 'pricing') {
+    const subcommand = args[1];
+    const { getDb } = require('../dist/db');
+    const { initSchema } = require('../dist/db/schema');
+    const { listModelProfiles } = require('../dist/core/cost');
+    const { initPricing, fetchRemotePricing, cachePricingToDb } = require('../dist/core/cost/pricing-loader');
+
+    const db = getDb();
+    initSchema(db);
+    initPricing(db);
+
+    if (subcommand === 'update') {
+      console.log('Fetching latest pricing from remote...');
+      const profiles = await fetchRemotePricing();
+      if (profiles.length === 0) {
+        console.log('No pricing data received. Using existing profiles.');
+      } else {
+        cachePricingToDb(db, profiles);
+        for (const p of profiles) {
+          const { registerModelProfile } = require('../dist/core/cost');
+          registerModelProfile(p);
+        }
+        console.log(`Updated ${profiles.length} model pricing profiles.`);
+      }
+      return;
+    }
+
+    if (subcommand === 'list' || !subcommand) {
+      const profiles = listModelProfiles();
+      console.log(`\n  Known model pricing (${profiles.length} models):\n`);
+      const grouped = {};
+      for (const p of profiles) {
+        if (!grouped[p.provider]) grouped[p.provider] = [];
+        grouped[p.provider].push(p);
+      }
+      for (const [provider, models] of Object.entries(grouped)) {
+        console.log(`  ${provider}:`);
+        for (const m of models) {
+          console.log(`    ${m.model.padEnd(35)} in: $${m.inputPricePer1M}/1M  out: $${m.outputPricePer1M}/1M`);
+        }
+        console.log();
+      }
+      return;
+    }
+
+    if (subcommand === '--help' || subcommand === '-h') {
+      console.log(`
+  OpenGauge Pricing — Manage model pricing profiles
+
+  Usage:
+    npx opengauge pricing [subcommand]
+
+  Subcommands:
+    list              Show all known model pricing (default)
+    update            Fetch latest pricing from remote
+
+  Custom pricing in ~/.opengauge/config.yml:
+    pricing:
+      - provider: anthropic
+        model: my-custom-model
+        inputPricePer1M: 5
+        outputPricePer1M: 25
+      `);
+      return;
+    }
+
+    console.log(`Unknown pricing subcommand: ${subcommand}. Use --help for usage.`);
+    return;
+  }
+
   // ---- watch command ----
   if (command === 'watch') {
     const { startWatchProxy } = require('../dist/proxy/server');
@@ -87,6 +158,7 @@ async function main() {
     (default)       Start the chat UI server
     stats           Show analytics dashboard
     watch           Start proxy watch mode for IDE agents
+    pricing         Manage model pricing profiles
 
   Options (chat server):
     --port <number>   Port to run on (default: 3000)
